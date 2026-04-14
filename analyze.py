@@ -587,6 +587,57 @@ try:
             plt.close()
             print(f"  Saved Plot: {plot5_path}")
 
+     # --- Plot 6: Comparison of Effect Sizes (Our Study vs. Original Paper) ---
+    # Values for Original Study are approximate based on Wolf et al. (2021) results
+    comparison_data = [
+        {"Hypothesis": "H1: Anger", "Study": "Our Study", "Effect Size (Cohen's d)": 0.132},
+        {"Hypothesis": "H1: Anger", "Study": "Wolf et al. (2021)", "Effect Size (Cohen's d)": 0.05},
+        {"Hypothesis": "H2: Fear", "Study": "Our Study", "Effect Size (Cohen's d)": -0.100},
+        {"Hypothesis": "H2: Fear", "Study": "Wolf et al. (2021)", "Effect Size (Cohen's d)": -0.02},
+        {"Hypothesis": "H3: Happy", "Study": "Our Study", "Effect Size (Cohen's d)": 0.123},
+        {"Hypothesis": "H3: Happy", "Study": "Wolf et al. (2021)", "Effect Size (Cohen's d)": 0.01},
+        {"Hypothesis": "H4: Neutral", "Study": "Our Study", "Effect Size (Cohen's d)": -0.237},
+        {"Hypothesis": "H4: Neutral", "Study": "Wolf et al. (2021)", "Effect Size (Cohen's d)": 0.08},
+    ]
+    df_comp = pd.DataFrame(comparison_data)
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=df_comp, x="Hypothesis", y="Effect Size (Cohen's d)", hue="Study", palette="muted")
+    plt.axhline(0, color='black', linewidth=0.8)
+    plt.title("Replication Comparison: Cohen's d Effect Sizes", pad=15, fontweight='bold')
+    plt.ylim(-0.5, 0.5)
+    plt.ylabel("Cohen's d (Effect Size)", fontweight='bold')
+    
+    plot6_path = os.path.join(OUTPUT_DIR, "plot_replication_comparison.png")
+    plt.tight_layout()
+    plt.savefig(plot6_path, dpi=300)
+    plt.close()
+    print(f"  Saved Plot: {plot6_path}")
+
+    # --- Plot 7: Interaction Plot (Line Graph) ---
+    plt.figure(figsize=(9, 6))
+    sns.pointplot(
+        data=df_congruent, 
+        x="shownEmotion", 
+        y="rating", 
+        hue="facialColoration", 
+        markers=["o", "s"], 
+        linestyles=["-", "--"],
+        palette={"NR": "#3498DB", "R": "#E74C3C"},
+        order=["A", "F", "HC", "N"],
+        capsize=.1
+    )
+    plt.title("Visual Interaction: Emotion x Coloration", pad=15, fontweight='bold')
+    plt.ylabel("Mean Intensity Rating", fontweight='bold')
+    plt.xlabel("Face Condition", fontweight='bold')
+    plt.xticks(ticks=[0, 1, 2, 3], labels=["Angry", "Fearful", "Happy", "Neutral"])
+    
+    plot7_path = os.path.join(OUTPUT_DIR, "plot_interaction_lines.png")
+    plt.tight_layout()
+    plt.savefig(plot7_path, dpi=300)
+    plt.close()
+    print(f"  Saved Plot: {plot7_path}")
+
 except ImportError:
     print("  [WARNING] seaborn or matplotlib not installed. Presentation plots were skipped.")
     print("  Install with: pip install seaborn matplotlib\n")
