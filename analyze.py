@@ -22,9 +22,31 @@ warnings.filterwarnings("ignore", category=UserWarning)
 import pandas as pd
 import numpy as np
 import os
+import sys
 
 OUTPUT_DIR = "results" 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# --- NEW LOGGING CODE ---
+class Logger:
+    def __init__(self, filepath):
+        self.terminal = sys.stdout
+        self.log = open(filepath, "w", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+
+    def flush(self):
+        # This handles the flush command by doing nothing, 
+        # required for Python 3 compatibility.
+        self.terminal.flush()
+        self.log.flush()
+
+# Redirect standard output to both the terminal and your new txt file
+log_path = os.path.join(OUTPUT_DIR, "execution_log.txt")
+sys.stdout = Logger(log_path)
+# ------------------------
 
 # Statistical packages — imported with graceful fallback
 try:
