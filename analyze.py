@@ -21,6 +21,10 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 import pandas as pd
 import numpy as np
+import os
+
+OUTPUT_DIR = "results" 
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Statistical packages — imported with graceful fallback
 try:
@@ -469,8 +473,8 @@ for face_emo in ["A", "F", "HC", "N"]:
                   f"D={diff.mean():+.3f}, d={d:+.3f}, p={pv:.3f} {sig}")
     print()
 
-results_df.to_csv("hypothesis_test_results.csv", index=False)
-print("  Saved: hypothesis_test_results.csv\n")
+results_df.to_csv(os.path.join(OUTPUT_DIR, "hypothesis_test_results.csv"), index=False)
+print(f"  Saved: {os.path.join(OUTPUT_DIR, 'hypothesis_test_results.csv')}\n")
 
 # Clean up temp columns
 df_long.drop(columns=["is_congruent", "_eid_str", "congruent_choice"], errors="ignore", inplace=True)
@@ -532,8 +536,8 @@ if HAS_BAYESIAN:
         fig_ppc = az.plot_ppc(idata, num_pp_samples=100)
         try:
             import matplotlib.pyplot as plt
-            plt.savefig("posterior_predictive_check.png", dpi=150, bbox_inches="tight")
-            print("  Saved: posterior_predictive_check.png")
+            plt.savefig(os.path.join(OUTPUT_DIR, "posterior_predictive_check.png"), dpi=150, bbox_inches="tight")
+            print(f"  Saved: {os.path.join(OUTPUT_DIR, 'posterior_predictive_check.png')}")
         except Exception:
             print("  [NOTE] Could not save PPC plot (matplotlib issue).")
 
@@ -569,11 +573,11 @@ print("=" * 72)
 print("STEP 7: SAVE PROCESSED DATA")
 print("=" * 72)
 
-df_long.to_csv("df_long_all_ratings.csv", index=False)
-print(f"  Saved: df_long_all_ratings.csv ({df_long.shape[0]} rows)")
+df_long.to_csv(os.path.join(OUTPUT_DIR, "df_long_all_ratings.csv"), index=False)
+print(f"  Saved: {os.path.join(OUTPUT_DIR, 'df_long_all_ratings.csv')} ({df_long.shape[0]} rows)")
 
-df_congruent.to_csv("df_congruent_ratings.csv", index=False)
-print(f"  Saved: df_congruent_ratings.csv ({df_congruent.shape[0]} rows)")
+df_congruent.to_csv(os.path.join(OUTPUT_DIR, "df_congruent_ratings.csv"), index=False)
+print(f"  Saved: {os.path.join(OUTPUT_DIR, 'df_congruent_ratings.csv')} ({df_congruent.shape[0]} rows)")
 
 print()
 print("=" * 72)
