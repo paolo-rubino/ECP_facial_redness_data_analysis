@@ -113,6 +113,10 @@ except Exception as e:
 # ==============================================================================
 print("\n--- Running Bayesian Ordered Probit ---")
 
+# FIX: Convert the float ratings to an ordered Categorical type for Bambi's cumulative family
+df_congruent['rating'] = df_congruent['rating'].astype(int)
+df_congruent['rating'] = pd.Categorical(df_congruent['rating'], categories=[1, 2, 3, 4, 5], ordered=True)
+
 # Bambi mimics lme4 formula syntax. 
 # Family 'cumulative' with link 'probit' handles ordinal 1-5 scales perfectly.
 bambi_formula = "rating ~ facialColoration * shownEmotion + (1|participantID) + (1|targetNumber)"
@@ -126,10 +130,10 @@ bayes_model = bmb.Model(
     link="probit"
 )
 
-# Bambi uses weakly informative priors by default (similar to normal(0,1)).
 # Set cores dynamically to speed up NUTS sampling.
 try:
     # Run the MCMC sampler
+    # Note: If it hangs or crashes your PC, lower cores=1
     bayes_results = bayes_model.fit(draws=2000, tune=1000, chains=4, cores=4)
     
     # Summary of credibility intervals (HDI)
