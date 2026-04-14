@@ -8,7 +8,7 @@ Conceptual replication of Wolf, Leder, Röseler & Schütz (2021),
 Cognition and Emotion, 35(8), 1607-1617.
 
 Requirements:
-    pip install pandas numpy statsmodels bambi arviz matplotlib
+    pip install pandas numpy statsmodels bambi arviz matplotlib seaborn
 
 This script is designed to run on both the current (incomplete) dataset
 and the final complete dataset without modification.
@@ -77,22 +77,16 @@ print("STEP 1: DATA IMPORT & CLEANING")
 print("=" * 72)
 
 # --- Step 1: Load CSV; Qualtrics row architecture ---
-# Row 0 = real column headers (preserved automatically by pandas).
-# Rows 0-1 of the DATA (i.e., indices 0 & 1 after read) contain
-# Qualtrics question text and internal JSON Import IDs. Discard them.
 df = pd.read_csv(DATA_PATH)
 print(f"  Raw import shape: {df.shape}")
 df = df.iloc[2:].reset_index(drop=True)
 print(f"  After removing Qualtrics metadata rows: {df.shape}")
 
 # --- Step 2: Type conversion (CRITICAL) ---
-# Because the discarded rows contained text, pandas defaults to object dtype
-# for numeric columns. Coerce them now.
 df["Progress"] = pd.to_numeric(df["Progress"], errors="coerce")
 df["Finished"] = pd.to_numeric(df["Finished"], errors="coerce")
 df["consent_form"] = pd.to_numeric(df["consent_form"], errors="coerce")
 
-# Convert ALL rating columns (start with 'WF-' or 'WM-') to numeric
 rating_cols = [c for c in df.columns if c.startswith("WF-") or c.startswith("WM-")]
 for col in rating_cols:
     df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -108,7 +102,6 @@ df["participantID"] = df["participantID"].replace({"ZP009": "P009", "Po27": "P02
 print(f"  Participant ID typos corrected (ZP009→P009, Po27→P027).")
 
 # --- Step 5: Consent filter ---
-# Qualtrics recodes: 1.0 = consent given; 2.0 = not given; NaN = missing
 df = df[df["consent_form"] == 1.0].reset_index(drop=True)
 print(f"  After consent filter: {df.shape[0]} rows")
 
@@ -128,7 +121,6 @@ n_excluded = n_before - df.shape[0]
 print(f"  Excluded P046: {n_excluded} row(s) removed. Remaining: {df.shape[0]}")
 
 # --- Step 9: Column pruning ---
-# Drop ishihara columns, Qualtrics metadata, and target-assignment columns
 ishihara_cols = [c for c in df.columns if "ishihara" in c.lower()]
 qualtrics_meta = [
     "EndDate", "Status", "Duration (in seconds)", "RecordedDate",
@@ -151,10 +143,8 @@ print("=" * 72)
 print("STEP 2: RESHAPE TO LONG FORMAT & ENGINEER VARIABLES")
 print("=" * 72)
 
-# Identify all rating columns present in the cleaned data
 value_cols = [c for c in df.columns if c.startswith("WF-") or c.startswith("WM-")]
 
-# Pivot to long format
 df_long = df.melt(
     id_vars=["participantID"],
     value_vars=value_cols,
@@ -162,13 +152,9 @@ df_long = df.melt(
     value_name="rating",
 )
 
-# Drop NaN ratings (images not shown to this participant due to randomisation)
 df_long = df_long.dropna(subset=["rating"]).reset_index(drop=True)
 print(f"  Long format (after dropping NaN): {df_long.shape[0]} observations")
 
-# Extract experimental variables from column names using regex
-# Format: targetType-targetNumber-facialColoration-shownEmotion_emotionChoiceID
-# e.g.  WF-001-NR-N_1
 pattern = r"^(W[FM])-(\d+)-(NR|R)-([A-Z]+)_(\d)$"
 extracted = df_long["item"].str.extract(pattern)
 extracted.columns = [
@@ -178,20 +164,15 @@ df_long = pd.concat([df_long, extracted], axis=1)
 df_long = df_long.dropna(subset=["targetType"]).reset_index(drop=True)
 print(f"  After regex extraction: {df_long.shape[0]} observations")
 
-# Map target gender from targetType
 df_long["target_gender"] = df_long["targetType"].map({"WF": "Female", "WM": "Male"})
 
-# Map emotionChoiceID to readable labels
 emotion_choice_labels = {
     "1": "Happy", "2": "Sad", "3": "Surprised",
     "4": "Angry", "5": "Disgusted", "6": "Scared",
 }
 df_long["ratedEmotion"] = df_long["emotionChoiceID"].map(emotion_choice_labels)
-
-# Ensure rating is numeric integer
 df_long["rating"] = df_long["rating"].astype(int)
 
-# Print summary
 print(f"  Target types present: {sorted(df_long['targetType'].unique())}")
 print(f"  Target genders present: {sorted(df_long['target_gender'].unique())}")
 print(f"  Shown emotions: {sorted(df_long['shownEmotion'].unique())}")
@@ -209,12 +190,6 @@ print("=" * 72)
 print("STEP 3: CONGRUENT RATING FILTER")
 print("=" * 72)
 
-# For the main hypotheses, we only use the rating corresponding to the
-# depicted emotion (or the hypothesised emotion for neutral faces):
-#   A  (angry face)   → keep _4 (Angry rating)
-#   F  (fearful face) → keep _6 (Scared rating)
-#   HC (happy face)   → keep _1 (Happy rating)
-#   N  (neutral face) → keep _4 (Angry rating)  ← tests H4
 congruent_map = {"A": "4", "F": "6", "HC": "1", "N": "4"}
 df_long["congruent_choice"] = df_long["shownEmotion"].map(congruent_map)
 df_congruent = df_long[df_long["emotionChoiceID"] == df_long["congruent_choice"]].copy()
@@ -267,37 +242,23 @@ if HAS_STATSMODELS:
     print("STEP 5: FREQUENTIST MIXED-EFFECTS MODELS (statsmodels)")
     print("=" * 72)
 
-    # ------------------------------------
-    # Prepare data for modelling
-    # ------------------------------------
     mod_df = df_congruent.copy()
-
-    # Contrast-code facialColoration: NR = 0, R = 1
     mod_df["color_R"] = (mod_df["facialColoration"] == "R").astype(int)
 
-    # Create dummy variables for shownEmotion (reference = A)
     mod_df["emo_F"]  = (mod_df["shownEmotion"] == "F").astype(int)
     mod_df["emo_HC"] = (mod_df["shownEmotion"] == "HC").astype(int)
     mod_df["emo_N"]  = (mod_df["shownEmotion"] == "N").astype(int)
 
-    # Dynamically check if target_gender has >1 level
     n_genders = mod_df["target_gender"].nunique()
     gender_term = " + C(target_gender)" if n_genders > 1 else ""
     if n_genders == 1:
         print(f"  [NOTE] Only one target_gender level present ({mod_df['target_gender'].unique()[0]}).")
         print(f"         target_gender is dropped from models to avoid singular matrix.\n")
 
-    # ------------------------------------
-    # Full interaction model
-    # ------------------------------------
     print("--- Model: rating ~ facialColoration * shownEmotion (+ target_gender) ---\n")
-
     formula = f"rating ~ color_R * (emo_F + emo_HC + emo_N){gender_term}"
 
-    # Try with random intercepts for both participant and target
     try:
-        # statsmodels mixedlm only supports one grouping factor natively.
-        # We use participantID as the primary grouping variable.
         model = smf.mixedlm(
             formula,
             data=mod_df,
@@ -309,26 +270,16 @@ if HAS_STATSMODELS:
         print(f"  [ERROR] Model fitting failed: {e}")
         result = None
 
-    # ------------------------------------
-    # Planned contrasts (H1–H4)
-    # ------------------------------------
     if result is not None:
         print("\n" + "-" * 50)
         print("PLANNED CONTRASTS: R vs NR within each emotion")
         print("-" * 50)
-
-        # The interaction model parameterises the effect of color_R as:
-        #   For A  (reference): coef of color_R
-        #   For F:  coef of color_R + coef of color_R:emo_F
-        #   For HC: coef of color_R + coef of color_R:emo_HC
-        #   For N:  coef of color_R + coef of color_R:emo_N
 
         params = result.params
         se = result.bse
         pvals = result.pvalues
 
         contrasts = {}
-        # H1: Red effect on Angry faces (reference level)
         if "color_R" in params:
             contrasts["H1 (Angry: R vs NR)"] = {
                 "estimate": params["color_R"],
@@ -336,16 +287,13 @@ if HAS_STATSMODELS:
                 "p": pvals["color_R"],
             }
 
-        # H2: Red effect on Fearful faces
         if "color_R:emo_F" in params:
             est = params["color_R"] + params["color_R:emo_F"]
-            # Approximate SE via delta method (conservative)
             contrasts["H2 (Fear: R vs NR)"] = {
                 "estimate": est,
                 "interaction_p": pvals["color_R:emo_F"],
             }
 
-        # H3: Red effect on Happy faces
         if "color_R:emo_HC" in params:
             est = params["color_R"] + params["color_R:emo_HC"]
             contrasts["H3 (Happy: R vs NR)"] = {
@@ -353,7 +301,6 @@ if HAS_STATSMODELS:
                 "interaction_p": pvals["color_R:emo_HC"],
             }
 
-        # H4: Red effect on Neutral faces (anger rating)
         if "color_R:emo_N" in params:
             est = params["color_R"] + params["color_R:emo_N"]
             contrasts["H4 (Neutral: R vs NR)"] = {
@@ -369,15 +316,10 @@ if HAS_STATSMODELS:
                 else:
                     print(f"    {k}: {v:.4f}")
 
-    # ------------------------------------
-    # Alternative: Simple within-emotion t-tests (supplementary)
-    # ------------------------------------
     print("\n\n--- Supplementary: Paired within-emotion comparisons (R vs NR) ---")
     from scipy import stats
-
     for emo in ["A", "F", "HC", "N"]:
         emo_data = df_congruent[df_congruent["shownEmotion"] == emo]
-        # Aggregate to participant-level means within each coloration
         agg = emo_data.groupby(["participantID", "facialColoration"])["rating"].mean().unstack()
         if "NR" in agg.columns and "R" in agg.columns:
             paired = agg.dropna()
@@ -419,7 +361,6 @@ expectations = {
 results_rows = []
 for emo in ["A", "F", "HC", "N"]:
     sub = df_congruent[df_congruent["shownEmotion"] == emo]
-    # Aggregate to participant-level means per coloration
     r_means = sub[sub["facialColoration"] == "R"].groupby("participantID")["rating"].mean()
     nr_means = sub[sub["facialColoration"] == "NR"].groupby("participantID")["rating"].mean()
     paired = pd.DataFrame({"R": r_means, "NR": nr_means}).dropna()
@@ -434,8 +375,7 @@ for emo in ["A", "F", "HC", "N"]:
 
         print(f"\n  {hyp_labels[emo]}: {emo_labels[emo]} faces")
         print(f"    Prediction: {expectations[emo]}")
-        print(f"    M(R) = {paired['R'].mean():.3f}, M(NR) = {paired['NR'].mean():.3f}, "
-              f"Diff = {diff.mean():.3f}")
+        print(f"    M(R) = {paired['R'].mean():.3f}, M(NR) = {paired['NR'].mean():.3f}, Diff = {diff.mean():.3f}")
         print(f"    95% CI of diff: [{ci_low:.3f}, {ci_high:.3f}]")
         print(f"    t({len(paired)-1}) = {t_stat:.3f}, p = {p_val:.4f} {sig}")
         print(f"    Cohen's d = {d:.3f}")
@@ -454,12 +394,12 @@ print(results_df.to_string(index=False))
 
 # ---- Manipulation check ----
 print("\n\n--- Manipulation Check: Congruent vs Incongruent ratings ---")
-# emotionChoiceID may be str or int depending on context; convert to str for safe matching
-eid_str = df_long["emotionChoiceID"].astype(str)
+choice_labels = {"1": "Happy", "2": "Sad", "3": "Surprised", "4": "Angry", "5": "Disgusted", "6": "Scared"}
+df_long["_eid_str"] = df_long["emotionChoiceID"].astype(str)
 cong_pairs = {("A", "4"), ("F", "6"), ("HC", "1")}
 df_long["is_congruent"] = [
     1 if (se, ec) in cong_pairs else 0
-    for se, ec in zip(df_long["shownEmotion"], eid_str)
+    for se, ec in zip(df_long["shownEmotion"], df_long["_eid_str"])
 ]
 mc_data = df_long[df_long["shownEmotion"] != "N"].copy()
 cong_m = mc_data[mc_data["is_congruent"] == 1].groupby("participantID")["rating"].mean()
@@ -470,15 +410,12 @@ t_mc, p_mc = stats.ttest_rel(mc_paired["Congruent"], mc_paired["Incongruent"])
 diff_mc = mc_paired["Congruent"] - mc_paired["Incongruent"]
 d_mc = diff_mc.mean() / diff_mc.std()
 
-print(f"  M(Congruent) = {mc_paired['Congruent'].mean():.3f}, "
-      f"M(Incongruent) = {mc_paired['Incongruent'].mean():.3f}")
+print(f"  M(Congruent) = {mc_paired['Congruent'].mean():.3f}, M(Incongruent) = {mc_paired['Incongruent'].mean():.3f}")
 print(f"  t({len(mc_paired)-1}) = {t_mc:.3f}, p = {p_mc:.2e}, d = {d_mc:.3f}")
 print(f"  -> Participants {'DO' if p_mc < .05 else 'DO NOT'} reliably distinguish emotions.")
 
 # ---- Exploratory: All 24 cells ----
 print("\n\n--- Exploratory: R vs NR for all rated emotions x all face types ---")
-choice_labels = {"1": "Happy", "2": "Sad", "3": "Surprised", "4": "Angry", "5": "Disgusted", "6": "Scared"}
-df_long["_eid_str"] = df_long["emotionChoiceID"].astype(str)
 for face_emo in ["A", "F", "HC", "N"]:
     sub = df_long[df_long["shownEmotion"] == face_emo]
     for cid, clabel in choice_labels.items():
@@ -491,14 +428,100 @@ for face_emo in ["A", "F", "HC", "N"]:
             t, pv = stats.ttest_rel(both["R"], both["NR"])
             d = diff.mean() / diff.std() if diff.std() > 0 else 0
             sig = "*" if pv < .05 else ""
-            print(f"  {emo_labels[face_emo]:>8} face, {clabel:>10} rating: "
-                  f"D={diff.mean():+.3f}, d={d:+.3f}, p={pv:.3f} {sig}")
-    print()
+            print(f"  {emo_labels[face_emo]:>8} face, {clabel:>10} rating: D={diff.mean():+.3f}, d={d:+.3f}, p={pv:.3f} {sig}")
+print()
 
 results_df.to_csv(os.path.join(OUTPUT_DIR, "hypothesis_test_results.csv"), index=False)
 print(f"  Saved: {os.path.join(OUTPUT_DIR, 'hypothesis_test_results.csv')}\n")
 
-# Clean up temp columns
+# ============================================================================
+# 5c. VISUALISATIONS (matplotlib & seaborn)
+# ============================================================================
+
+print("=" * 72)
+print("STEP 5c: GENERATING PLOTS FOR PRESENTATION")
+print("=" * 72)
+
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    # Set nice styling for presentation
+    sns.set_theme(style="whitegrid", font_scale=1.1)
+    
+    # --- Plot 1: Main Effects Barplot ---
+    plt.figure(figsize=(9, 6))
+    ax = sns.barplot(
+        data=df_congruent, 
+        x="shownEmotion", 
+        y="rating", 
+        hue="facialColoration",
+        order=["A", "F", "HC", "N"], 
+        palette={"NR": "#A9CCE3", "R": "#F5B7B1"}, # Soft Blue vs Red
+        capsize=0.05, 
+        errwidth=1.5,
+        errorbar=("ci", 95)
+    )
+    plt.title("Effect of Facial Redness on Emotion Ratings (95% CI)", pad=15, fontweight='bold')
+    plt.ylabel("Intensity Rating (1-5)", fontweight='bold')
+    plt.xlabel("Shown Emotion Condition", fontweight='bold')
+    plt.ylim(1, 5)
+    ax.set_xticklabels(["Angry (H1)", "Fearful (H2)", "Happy (H3)", "Neutral (H4)"])
+    plt.legend(title="Facial Coloration", labels=["Normal (NR)", "Red (R)"], loc="upper right")
+    
+    plot1_path = os.path.join(OUTPUT_DIR, "plot_main_effects_bar.png")
+    plt.tight_layout()
+    plt.savefig(plot1_path, dpi=300)
+    plt.close()
+    print(f"  Saved Plot: {plot1_path}")
+
+    # --- Plot 2: Exploratory Differences Heatmap ---
+    heatmap_data = []
+    for face_emo in ["A", "F", "HC", "N"]:
+        sub = df_long[df_long["shownEmotion"] == face_emo]
+        for cid, clabel in choice_labels.items():
+            sub2 = sub[sub["_eid_str"] == cid]
+            r_m = sub2[sub2["facialColoration"] == "R"].groupby("participantID")["rating"].mean()
+            nr_m = sub2[sub2["facialColoration"] == "NR"].groupby("participantID")["rating"].mean()
+            both = pd.DataFrame({"R": r_m, "NR": nr_m}).dropna()
+            if len(both) > 1:
+                diff_mean = (both["R"] - both["NR"]).mean()
+                heatmap_data.append({"Face": face_emo, "Rated Emotion": clabel, "Difference": diff_mean})
+    
+    if heatmap_data:
+        df_heat = pd.DataFrame(heatmap_data).pivot(index="Rated Emotion", columns="Face", values="Difference")
+        # Format the matrix layout
+        df_heat = df_heat[["A", "F", "HC", "N"]]
+        df_heat.columns = ["Angry Face", "Fearful Face", "Happy Face", "Neutral Face"]
+        df_heat = df_heat.loc[["Angry", "Scared", "Happy", "Sad", "Disgusted", "Surprised"]]
+        
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(
+            df_heat, 
+            annot=True, 
+            cmap="vlag",   # Red/Blue diverging colormap
+            center=0, 
+            fmt=".2f", 
+            cbar_kws={'label': 'Mean Diff (Red minus Normal)'},
+            linewidths=1,
+            linecolor='white'
+        )
+        plt.title("Exploratory Analysis: Impact of Redness Across All Ratings", pad=15, fontweight='bold')
+        plt.xlabel("Target Stimulus", fontweight='bold')
+        plt.ylabel("Emotion Being Rated", fontweight='bold')
+        
+        plot2_path = os.path.join(OUTPUT_DIR, "plot_exploratory_heatmap.png")
+        plt.tight_layout()
+        plt.savefig(plot2_path, dpi=300)
+        plt.close()
+        print(f"  Saved Plot: {plot2_path}")
+        
+except ImportError:
+    print("  [WARNING] seaborn or matplotlib not installed. Presentation plots were skipped.")
+    print("  Install with: pip install seaborn matplotlib\n")
+
+
+# Clean up temp columns used in Step 5b and 5c
 df_long.drop(columns=["is_congruent", "_eid_str", "congruent_choice"], errors="ignore", inplace=True)
 
 
@@ -507,7 +530,7 @@ df_long.drop(columns=["is_congruent", "_eid_str", "congruent_choice"], errors="i
 # ============================================================================
 
 if HAS_BAYESIAN:
-    print("=" * 72)
+    print("\n" + "=" * 72)
     print("STEP 6: BAYESIAN CUMULATIVE PROBIT MODEL (bambi + arviz)")
     print("=" * 72)
 
@@ -591,7 +614,7 @@ else:
 # 7. SAVE PROCESSED DATA
 # ============================================================================
 
-print("=" * 72)
+print("\n" + "=" * 72)
 print("STEP 7: SAVE PROCESSED DATA")
 print("=" * 72)
 
