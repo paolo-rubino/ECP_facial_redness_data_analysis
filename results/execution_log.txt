@@ -1,0 +1,301 @@
+========================================================================
+STEP 1: DATA IMPORT & CLEANING
+========================================================================
+  Raw import shape: (80, 519)
+  After removing Qualtrics metadata rows: (78, 519)
+  Converted 480 rating columns to numeric.
+  After date filter (>= 2026-03-19): 62 rows
+  Participant ID typos corrected (ZP009→P009, Po27→P027).
+  After consent filter: 61 rows
+  After completion filter: 61 rows
+  After deduplication: 55 unique participants
+  Excluded P046: 1 row(s) removed. Remaining: 54
+  After column pruning: (54, 481) (participantID + 480 rating cols)
+  Final N = 54 participants
+
+========================================================================
+STEP 2: RESHAPE TO LONG FORMAT & ENGINEER VARIABLES
+========================================================================
+  Long format (after dropping NaN): 5088 observations
+  After regex extraction: 5088 observations
+  Target types present: ['WF']
+  Target genders present: ['Female']
+  Shown emotions: ['A', 'F', 'HC', 'N']
+  Facial colorations: ['NR', 'R']
+  Emotion choice IDs: ['1', '2', '3', '4', '5', '6']
+  Unique participants: 53
+  Unique targets: 10
+
+========================================================================
+STEP 3: CONGRUENT RATING FILTER
+========================================================================
+  Congruent observations: 848
+
+  Condition breakdown (N obs, Mean rating, SD):
+                               count   mean    std
+shownEmotion facialColoration                     
+A            NR                  106  3.858  1.082
+             R                   106  3.943  1.040
+F            NR                  106  2.660  1.479
+             R                   106  2.575  1.467
+HC           NR                  106  4.292  0.883
+             R                   106  4.358  0.853
+N            NR                  106  1.915  1.139
+             R                   106  1.792  1.049
+
+========================================================================
+STEP 4: DESCRIPTIVE STATISTICS
+========================================================================
+
+--- Full dataset (all 6 rated emotions) ---
+                                            count   mean    std
+shownEmotion facialColoration ratedEmotion                     
+A            NR               Angry           106  3.858  1.082
+                              Disgusted       106  2.660  1.358
+                              Happy           106  1.123  0.330
+                              Sad             106  1.585  0.791
+                              Scared          106  1.283  0.658
+                              Surprised       106  1.509  0.808
+             R                Angry           106  3.943  1.040
+                              Disgusted       106  2.292  1.338
+                              Happy           106  1.151  0.453
+                              Sad             106  1.491  0.707
+                              Scared          106  1.311  0.638
+                              Surprised       106  1.406  0.644
+F            NR               Angry           106  1.481  0.807
+                              Disgusted       106  2.217  1.295
+                              Happy           106  1.594  1.031
+                              Sad             106  1.547  0.906
+                              Scared          106  2.660  1.479
+                              Surprised       106  3.915  1.070
+             R                Angry           106  1.377  0.654
+                              Disgusted       106  2.113  1.237
+                              Happy           106  1.566  0.956
+                              Sad             106  1.491  0.865
+                              Scared          106  2.575  1.467
+                              Surprised       106  3.858  1.167
+HC           NR               Angry           106  1.160  0.417
+                              Disgusted       106  1.189  0.537
+                              Happy           106  4.292  0.883
+                              Sad             106  1.226  0.540
+                              Scared          106  1.038  0.236
+                              Surprised       106  1.264  0.622
+             R                Angry           106  1.170  0.447
+                              Disgusted       106  1.151  0.548
+                              Happy           106  4.358  0.853
+                              Sad             106  1.236  0.561
+                              Scared          106  1.038  0.191
+                              Surprised       106  1.245  0.599
+N            NR               Angry           106  1.915  1.139
+                              Disgusted       106  1.660  1.050
+                              Happy           106  1.519  0.746
+                              Sad             106  2.330  1.193
+                              Scared          106  1.425  0.861
+                              Surprised       106  1.387  0.751
+             R                Angry           106  1.792  1.049
+                              Disgusted       106  1.613  1.074
+                              Happy           106  1.462  0.706
+                              Sad             106  2.179  1.256
+                              Scared          106  1.377  0.723
+                              Surprised       106  1.255  0.677
+
+--- Congruent ratings by shownEmotion × facialColoration × target_gender ---
+                                             count   mean    std
+shownEmotion facialColoration target_gender                     
+A            NR               Female           106  3.858  1.082
+             R                Female           106  3.943  1.040
+F            NR               Female           106  2.660  1.479
+             R                Female           106  2.575  1.467
+HC           NR               Female           106  4.292  0.883
+             R                Female           106  4.358  0.853
+N            NR               Female           106  1.915  1.139
+             R                Female           106  1.792  1.049
+
+========================================================================
+STEP 5: FREQUENTIST MIXED-EFFECTS MODELS (statsmodels)
+========================================================================
+  [NOTE] Only one target_gender level present (Female).
+         target_gender is dropped from models to avoid singular matrix.
+
+--- Model: rating ~ facialColoration * shownEmotion (+ target_gender) ---
+
+          Mixed Linear Model Regression Results
+==========================================================
+Model:              MixedLM Dependent Variable: rating    
+No. Observations:   848     Method:             REML      
+No. Groups:         53      Scale:              1.2001    
+Min. group size:    16      Log-Likelihood:     -1311.0697
+Max. group size:    16      Converged:          Yes       
+Mean group size:    16.0                                  
+----------------------------------------------------------
+               Coef.  Std.Err.    z    P>|z| [0.025 0.975]
+----------------------------------------------------------
+Intercept       3.858    0.116  33.263 0.000  3.631  4.086
+color_R         0.085    0.150   0.564 0.573 -0.210  0.380
+emo_F          -1.198    0.150  -7.962 0.000 -1.493 -0.903
+emo_HC          0.434    0.150   2.884 0.004  0.139  0.729
+emo_N          -1.943    0.150 -12.915 0.000 -2.238 -1.648
+color_R:emo_F  -0.170    0.213  -0.798 0.425 -0.587  0.247
+color_R:emo_HC -0.019    0.213  -0.089 0.929 -0.436  0.398
+color_R:emo_N  -0.208    0.213  -0.975 0.329 -0.625  0.210
+Group Var       0.113    0.035                            
+==========================================================
+
+
+--------------------------------------------------
+PLANNED CONTRASTS: R vs NR within each emotion
+--------------------------------------------------
+
+  H1 (Angry: R vs NR):
+    estimate: 0.0849
+    SE: 0.1505
+    p: 0.5726 n.s.
+
+  H2 (Fear: R vs NR):
+    estimate: -0.0849
+    interaction_p: 0.4249 n.s.
+
+  H3 (Happy: R vs NR):
+    estimate: 0.0660
+    interaction_p: 0.9293 n.s.
+
+  H4 (Neutral: R vs NR):
+    estimate: -0.1226
+    interaction_p: 0.3294 n.s.
+
+
+--- Supplementary: Paired within-emotion comparisons (R vs NR) ---
+  Angry: M(R)=3.943, M(NR)=3.858, t(52)=0.964, p=0.3394, d=0.132
+  Fearful: M(R)=2.575, M(NR)=2.660, t(52)=-0.729, p=0.4692, d=-0.100
+  Happy: M(R)=4.358, M(NR)=4.292, t(52)=0.895, p=0.3751, d=0.123
+  Neutral: M(R)=1.792, M(NR)=1.915, t(52)=-1.724, p=0.0907, d=-0.237
+
+========================================================================
+STEP 5b: PAIRED t-TESTS (scipy — R vs NR per emotion condition)
+========================================================================
+  [NOTE] Participants with no valid ratings excluded: {'P052'}
+
+  H1: Angry faces
+    Prediction: Expect R > NR (significant)
+    M(R) = 3.943, M(NR) = 3.858, Diff = 0.085
+    95% CI of diff: [-0.088, 0.257]
+    t(52) = 0.964, p = 0.3394 n.s.
+    Cohen's d = 0.132
+
+  H2: Fearful faces
+    Prediction: Expect no significant difference
+    M(R) = 2.575, M(NR) = 2.660, Diff = -0.085
+    95% CI of diff: [-0.313, 0.143]
+    t(52) = -0.729, p = 0.4692 n.s.
+    Cohen's d = -0.100
+
+  H3: Happy faces
+    Prediction: Expect R > NR (significant)
+    M(R) = 4.358, M(NR) = 4.292, Diff = 0.066
+    95% CI of diff: [-0.079, 0.211]
+    t(52) = 0.895, p = 0.3751 n.s.
+    Cohen's d = 0.123
+
+  H4: Neutral faces
+    Prediction: Expect R > NR for anger ratings (significant)
+    M(R) = 1.792, M(NR) = 1.915, Diff = -0.123
+    95% CI of diff: [-0.262, 0.017]
+    t(52) = -1.724, p = 0.0907 n.s.
+    Cohen's d = -0.237
+
+
+--- Summary Table ---
+Hypothesis Emotion  M_Red  M_Normal   Diff  CI_low  CI_high      t  df      p      d
+        H1   Angry  3.943     3.858  0.085  -0.088    0.257  0.964  52 0.3394  0.132
+        H2 Fearful  2.575     2.660 -0.085  -0.313    0.143 -0.729  52 0.4692 -0.100
+        H3   Happy  4.358     4.292  0.066  -0.079    0.211  0.895  52 0.3751  0.123
+        H4 Neutral  1.792     1.915 -0.123  -0.262    0.017 -1.724  52 0.0907 -0.237
+
+
+--- Manipulation Check: Congruent vs Incongruent ratings ---
+  M(Congruent) = 3.615, M(Incongruent) = 1.623
+  t(52) = 23.582, p = 1.96e-29, d = 3.239
+  -> Participants DO reliably distinguish emotions.
+
+
+--- Exploratory: R vs NR for all rated emotions x all face types ---
+     Angry face,      Happy rating: D=+0.028, d=+0.082, p=0.554 
+     Angry face,        Sad rating: D=-0.094, d=-0.167, p=0.229 
+     Angry face,  Surprised rating: D=-0.104, d=-0.173, p=0.213 
+     Angry face,      Angry rating: D=+0.085, d=+0.132, p=0.339 
+     Angry face,  Disgusted rating: D=-0.368, d=-0.448, p=0.002 *
+     Angry face,     Scared rating: D=+0.028, d=+0.079, p=0.569 
+   Fearful face,      Happy rating: D=-0.028, d=-0.043, p=0.754 
+   Fearful face,        Sad rating: D=-0.057, d=-0.091, p=0.513 
+   Fearful face,  Surprised rating: D=-0.057, d=-0.075, p=0.589 
+   Fearful face,      Angry rating: D=-0.104, d=-0.176, p=0.207 
+   Fearful face,  Disgusted rating: D=-0.104, d=-0.142, p=0.305 
+   Fearful face,     Scared rating: D=-0.085, d=-0.100, p=0.469 
+     Happy face,      Happy rating: D=+0.066, d=+0.123, p=0.375 
+     Happy face,        Sad rating: D=+0.009, d=+0.023, p=0.868 
+     Happy face,  Surprised rating: D=-0.019, d=-0.053, p=0.699 
+     Happy face,      Angry rating: D=+0.009, d=+0.030, p=0.830 
+     Happy face,  Disgusted rating: D=-0.038, d=-0.089, p=0.522 
+     Happy face,     Scared rating: D=+0.000, d=+0.000, p=1.000 
+   Neutral face,      Happy rating: D=-0.057, d=-0.177, p=0.204 
+   Neutral face,        Sad rating: D=-0.151, d=-0.248, p=0.077 
+   Neutral face,  Surprised rating: D=-0.132, d=-0.280, p=0.047 *
+   Neutral face,      Angry rating: D=-0.123, d=-0.237, p=0.091 
+   Neutral face,  Disgusted rating: D=-0.047, d=-0.060, p=0.664 
+   Neutral face,     Scared rating: D=-0.047, d=-0.096, p=0.489 
+
+  Saved: results\hypothesis_test_results.csv
+
+========================================================================
+STEP 5c: GENERATING PLOTS FOR PRESENTATION
+========================================================================
+  Saved Plot: results\plot_main_effects_bar.png
+  Saved Plot: results\plot_exploratory_heatmap.png
+
+========================================================================
+STEP 6: BAYESIAN CUMULATIVE PROBIT MODEL (bambi + arviz)
+========================================================================
+  [NOTE] Only one target_gender level. Dropping from Bayesian model.
+
+  Formula: rating ~ facialColoration * shownEmotion
+  Family:  cumulative (probit link)
+  N obs:   848
+
+  Fitting model (this may take several minutes)...
+
+--- Posterior Summary (95% HDI) ---
+
+                                       mean     sd  hdi_2.5%  hdi_97.5%  mcse_mean  mcse_sd  ess_bulk  ess_tail  r_hat
+threshold[0]                         -1.572  0.116    -1.799     -1.349      0.002    0.001    4117.0    4911.0    1.0
+threshold[1]                         -0.966  0.108    -1.174     -0.752      0.002    0.001    4216.0    5552.0    1.0
+threshold[2]                         -0.453  0.103    -0.646     -0.252      0.002    0.001    4341.0    5286.0    1.0
+threshold[3]                          0.394  0.103     0.194      0.593      0.002    0.001    4492.0    6203.0    1.0
+facialColoration[R]                   0.119  0.144    -0.170      0.397      0.002    0.001    3968.0    4853.0    1.0
+shownEmotion[F]                      -0.943  0.146    -1.223     -0.652      0.002    0.001    4792.0    5359.0    1.0
+shownEmotion[HC]                      0.460  0.149     0.165      0.752      0.002    0.001    5217.0    5937.0    1.0
+shownEmotion[N]                      -1.561  0.154    -1.860     -1.263      0.002    0.002    4747.0    5598.0    1.0
+facialColoration:shownEmotion[R, F]  -0.162  0.205    -0.558      0.249      0.003    0.002    4767.0    5862.0    1.0
+facialColoration:shownEmotion[R, HC] -0.022  0.214    -0.451      0.388      0.003    0.002    4814.0    5092.0    1.0
+facialColoration:shownEmotion[R, N]  -0.239  0.215    -0.662      0.175      0.003    0.002    4933.0    5349.0    1.0
+
+  Generating posterior predictive checks...
+  Saved: results\posterior_predictive_check.png
+
+--- Hypothesis Testing via Credibility Intervals ---
+  Effects whose 95% HDI excludes zero are credibly different from zero.
+    facialColoration[R]: mean=0.1190, HDI=[-0.1700, 0.3970] → includes 0
+    facialColoration:shownEmotion[R, F]: mean=-0.1620, HDI=[-0.5580, 0.2490] → includes 0
+    facialColoration:shownEmotion[R, HC]: mean=-0.0220, HDI=[-0.4510, 0.3880] → includes 0
+    facialColoration:shownEmotion[R, N]: mean=-0.2390, HDI=[-0.6620, 0.1750] → includes 0
+
+========================================================================
+STEP 7: SAVE PROCESSED DATA
+========================================================================
+  Saved: results\df_long_all_ratings.csv (5088 rows)
+  Saved: results\df_congruent_ratings.csv (848 rows)
+
+========================================================================
+ANALYSIS COMPLETE
+  Final N = 53 participants
+  Total congruent observations = 848
+========================================================================
