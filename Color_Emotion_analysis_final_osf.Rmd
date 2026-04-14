@@ -1,0 +1,2606 @@
+---
+title: "Color_Emotion"
+author: "us"
+date: "24 11 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+
+# all your necessary packages
+packages <- c("tidyverse", 
+             "knitr",     
+             "plyr",
+             "lme4",
+             "brms",
+             "ggstance",
+             "purrr",
+             "sjPlot",
+             "rstan",
+             "ggplot2",
+             "skimr",
+             "arsenal",
+             "tools"
+             )  
+# install if needed and loading packages
+to_install <- packages[! packages %in% installed.packages()[, "Package"]]
+if (length(to_install)) { 
+  install.packages(to_install, repos = "https://cloud.r-project.org")
+}
+invisible(lapply(packages, library, character.only = TRUE))
+
+
+
+## Gives count, mean, standard deviation, standard error of the mean, and confidence interval (default 95%).
+##   data: a data frame.
+##   measurevar: the name of a column that contains the variable to be summariezed
+##   groupvars: a vector containing names of columns that contain grouping variables
+##   na.rm: a boolean that indicates whether to ignore NA's
+##   conf.interval: the percent range of the confidence interval (default is 95%)
+summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
+                      conf.interval=.95, .drop=TRUE) {
+    library(plyr)
+
+    # New version of length which can handle NA's: if na.rm==T, don't count them
+    length2 <- function (x, na.rm=FALSE) {
+        if (na.rm) sum(!is.na(x))
+        else       length(x)
+    }
+
+    # This does the summary. For each group's data frame, return a vector with
+    # N, mean, and sd
+    datac <- ddply(data, groupvars, .drop=.drop,
+      .fun = function(xx, col) {
+        c(N    = length2(xx[[col]], na.rm=na.rm),
+          mean = mean   (xx[[col]], na.rm=na.rm),
+          sd   = sd     (xx[[col]], na.rm=na.rm)
+        )
+      },
+      measurevar
+    )
+
+    # Rename the "mean" column    
+    datac <- rename(datac, c("mean" = measurevar))
+
+    datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+
+    # Confidence interval multiplier for standard error
+    # Calculate t-statistic for confidence interval: 
+    # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+    ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+    datac$ci <- datac$se * ciMult
+    return(datac)
+    library(tidyverse)
+}
+
+## Norms the data within specified groups in a data frame; it normalizes each
+## subject (identified by idvar) so that they have the same mean, within each group
+## specified by betweenvars.
+##   data: a data frame.
+##   idvar: the name of a column that identifies each subject (or matched subjects)
+##   measurevar: the name of a column that contains the variable to be summariezed
+##   betweenvars: a vector containing names of columns that are between-subjects variables
+##   na.rm: a boolean that indicates whether to ignore NA's
+normDataWithin <- function(data=NULL, idvar, measurevar, betweenvars=NULL,
+                           na.rm=FALSE, .drop=TRUE) {
+    library(plyr)
+
+    # Measure var on left, idvar + between vars on right of formula.
+    data.subjMean <- ddply(data, c(idvar, betweenvars), .drop=.drop,
+     .fun = function(xx, col, na.rm) {
+        c(subjMean = mean(xx[,col], na.rm=na.rm))
+      },
+      measurevar,
+      na.rm
+    )
+
+    # Put the subject means with original data
+    data <- merge(data, data.subjMean)
+
+    # Get the normalized data in a new column
+    measureNormedVar <- paste(measurevar, "_norm", sep="")
+    data[,measureNormedVar] <- data[,measurevar] - data[,"subjMean"] +
+                               mean(data[,measurevar], na.rm=na.rm)
+
+    # Remove this subject mean column
+    data$subjMean <- NULL
+    return(data)
+    library(tidyverse)
+    
+}
+
+## Summarizes data, handling within-subjects variables by removing inter-subject variability.
+## It will still work if there are no within-S variables.
+## Gives count, un-normed mean, normed mean (with same between-group mean),
+##   standard deviation, standard error of the mean, and confidence interval.
+## If there are within-subject variables, calculate adjusted values using method from Morey (2008).
+##   data: a data frame.
+##   measurevar: the name of a column that contains the variable to be summariezed
+##   betweenvars: a vector containing names of columns that are between-subjects variables
+##   withinvars: a vector containing names of columns that are within-subjects variables
+##   idvar: the name of a column that identifies each subject (or matched subjects)
+##   na.rm: a boolean that indicates whether to ignore NA's
+##   conf.interval: the percent range of the confidence interval (default is 95%)
+summarySEwithin <- function(data=NULL, measurevar, betweenvars=NULL, withinvars=NULL,
+                            idvar=NULL, na.rm=FALSE, conf.interval=.95, .drop=TRUE) {
+  library(plyr)
+  # Ensure that the betweenvars and withinvars are factors
+  factorvars <- vapply(data[, c(betweenvars, withinvars), drop=FALSE],
+    FUN=is.factor, FUN.VALUE=logical(1))
+
+  if (!all(factorvars)) {
+    nonfactorvars <- names(factorvars)[!factorvars]
+    message("Automatically converting the following non-factors to factors: ",
+            paste(nonfactorvars, collapse = ", "))
+    data[nonfactorvars] <- lapply(data[nonfactorvars], factor)
+
+    }
+
+  # Get the means from the un-normed data
+  datac <- summarySE(data, measurevar, groupvars=c(betweenvars, withinvars),
+                     na.rm=na.rm, conf.interval=conf.interval, .drop=.drop)
+  # Drop all the unused columns (these will be calculated with normed data)
+  datac$sd <- NULL
+  datac$se <- NULL
+  datac$ci <- NULL
+
+  # Norm each subject's data
+  ndata <- normDataWithin(data, idvar, measurevar, betweenvars, na.rm, .drop=.drop)
+
+  # This is the name of the new column
+  measurevar_n <- paste(measurevar, "_norm", sep="")
+
+  # Collapse the normed data - now we can treat between and within vars the same
+  ndatac <- summarySE(ndata, measurevar_n, groupvars=c(betweenvars, withinvars),
+                      na.rm=na.rm, conf.interval=conf.interval, .drop=.drop)
+
+  # Apply correction from Morey (2008) to the standard error and confidence interval
+  #  Get the product of the number of conditions of within-S variables
+  nWithinGroups    <- prod(vapply(ndatac[,withinvars, drop=FALSE], FUN=nlevels,
+                           FUN.VALUE=numeric(1)))
+  correctionFactor <- sqrt( nWithinGroups / (nWithinGroups-1) )
+
+  # Apply the correction factor
+  ndatac$sd <- ndatac$sd * correctionFactor
+  ndatac$se <- ndatac$se * correctionFactor
+  ndatac$ci <- ndatac$ci * correctionFactor
+
+  # Combine the un-normed means with the normed results
+  library(tidyverse)
+  merge(datac, ndatac)
+
+}
+
+
+library(tidyverse)
+library(ggplot2)
+library(lme4)
+library(brms)
+library(rstan)
+library(sjPlot)
+library(purrr)
+```
+
+# Data wrangling
+
+The repository contains two data files: raw data in  "rdata_EmotionRecognition_2018-07-04_15-51.csv" and processed data in "long_colorData.csv". The fundtion get_data reads in one of the two, depending on whether the processed file is in the data folder or not. The script will save the processed file after running it once, so the script preparing the data from the sosci raw data should only run once.
+
+
+```{r get the data, include=FALSE, echo = FALSE}
+
+data_folder <-"data/" # You have to set the data folder if it is different from data.
+
+get_data <- function (data_folder) { ## you have to set the data_folder when calling the function
+  files_in_folder <- list.files(data_folder)
+  if (!"long_colorData.csv"%in%files_in_folder) {
+    ds = read.table(
+      file = "./data/rdata_EmotionRecognition_2018-07-04_15-50.csv",
+      encoding = "UTF-8",
+      header = FALSE,
+      sep = "\t",
+      quote = "\"",
+      dec = ".",
+      row.names = "CASE",
+      col.names = c(
+        "CASE",
+        "SERIAL",
+        "REF",
+        "QUESTNNR",
+        "MODE",
+        "STARTED",
+        "DG01",
+        "DG02_01",
+        "DG03",
+        "DG04_01",
+        "DG05_01",
+        "DG06",
+        "DG07",
+        "DG08_01",
+        "DG09",
+        "RN01_CP",
+        "RN01",
+        "RN02_CP",
+        "RN02",
+        "RN03_CP",
+        "RN03",
+        "RN04_CP",
+        "RN04",
+        "RN05_CP",
+        "RN05x01",
+        "RN05x02",
+        "RN05x03",
+        "RN05x04",
+        "RN06_CP",
+        "RN06x01",
+        "RN06x02",
+        "RN06x03",
+        "RN06x04",
+        "RN07_CP",
+        "RN07x01",
+        "RN07x02",
+        "RN07x03",
+        "RN07x04",
+        "RN08_CP",
+        "RN08x01",
+        "RN08x02",
+        "RN08x03",
+        "RN08x04",
+        "RA01_01",
+        "RA01_02",
+        "RA01_03",
+        "RA01_04",
+        "RA01_05",
+        "RA01_06",
+        "RA02_01",
+        "RA02_02",
+        "RA02_03",
+        "RA02_04",
+        "RA02_05",
+        "RA02_06",
+        "RA03_01",
+        "RA03_02",
+        "RA03_03",
+        "RA03_04",
+        "RA03_05",
+        "RA03_06",
+        "RA04_01",
+        "RA04_02",
+        "RA04_03",
+        "RA04_04",
+        "RA04_05",
+        "RA04_06",
+        "RA05_01",
+        "RA05_02",
+        "RA05_03",
+        "RA05_04",
+        "RA05_05",
+        "RA05_06",
+        "RA06_01",
+        "RA06_02",
+        "RA06_03",
+        "RA06_04",
+        "RA06_05",
+        "RA06_06",
+        "RA07_01",
+        "RA07_02",
+        "RA07_03",
+        "RA07_04",
+        "RA07_05",
+        "RA07_06",
+        "RA08_01",
+        "RA08_02",
+        "RA08_03",
+        "RA08_04",
+        "RA08_05",
+        "RA08_06",
+        "RA09_01",
+        "RA09_02",
+        "RA09_03",
+        "RA09_04",
+        "RA09_05",
+        "RA09_06",
+        "RA10_01",
+        "RA10_02",
+        "RA10_03",
+        "RA10_04",
+        "RA10_05",
+        "RA10_06",
+        "RA11_01",
+        "RA11_02",
+        "RA11_03",
+        "RA11_04",
+        "RA11_05",
+        "RA11_06",
+        "RA12_01",
+        "RA12_02",
+        "RA12_03",
+        "RA12_04",
+        "RA12_05",
+        "RA12_06",
+        "RA13_01",
+        "RA13_02",
+        "RA13_03",
+        "RA13_04",
+        "RA13_05",
+        "RA13_06",
+        "RA14_01",
+        "RA14_02",
+        "RA14_03",
+        "RA14_04",
+        "RA14_05",
+        "RA14_06",
+        "RA15_01",
+        "RA15_02",
+        "RA15_03",
+        "RA15_04",
+        "RA15_05",
+        "RA15_06",
+        "RA16_01",
+        "RA16_02",
+        "RA16_03",
+        "RA16_04",
+        "RA16_05",
+        "RA16_06",
+        "CO01",
+        "CO02",
+        "AW03_01",
+        "AW04_01",
+        "FB01",
+        "FB02_01",
+        "FB03_01",
+        "FB04_01",
+        "EI01_01",
+        "EI01_02",
+        "EI01_03",
+        "EI01_04",
+        "DE01_BNM",
+        "DE01_BVS",
+        "DE01_FmF",
+        "DE01_ScW",
+        "DE01_ScH",
+        "DE01_QnW",
+        "TIME001",
+        "TIME002",
+        "TIME003",
+        "TIME004",
+        "TIME005",
+        "TIME006",
+        "TIME007",
+        "TIME008",
+        "TIME009",
+        "TIME010",
+        "TIME011",
+        "TIME012",
+        "TIME_SUM",
+        "MAILSENT",
+        "LASTDATA",
+        "FINISHED",
+        "Q_VIEWER",
+        "LASTPAGE",
+        "MAXPAGE",
+        "MISSING",
+        "MISSREL",
+        "TIME_RSI",
+        "DEG_TIME"
+      ),
+      as.is = TRUE,
+      colClasses = c(
+        CASE = "numeric",
+        SERIAL = "character",
+        REF = "character",
+        QUESTNNR = "character",
+        MODE = "character",
+        STARTED = "POSIXct",
+        DG01 = "numeric",
+        DG02_01 = "character",
+        DG03 = "numeric",
+        DG04_01 = "character",
+        DG05_01 = "character",
+        DG06 = "numeric",
+        DG07 = "numeric",
+        DG08_01 = "character",
+        DG09 = "numeric",
+        RN01_CP = "numeric",
+        RN01 = "numeric",
+        RN02_CP = "numeric",
+        RN02 = "numeric",
+        RN03_CP = "numeric",
+        RN03 = "numeric",
+        RN04_CP = "numeric",
+        RN04 = "numeric",
+        RN05_CP = "numeric",
+        RN05x01 = "numeric",
+        RN05x02 = "numeric",
+        RN05x03 = "numeric",
+        RN05x04 = "numeric",
+        RN06_CP = "numeric",
+        RN06x01 = "numeric",
+        RN06x02 = "numeric",
+        RN06x03 = "numeric",
+        RN06x04 = "numeric",
+        RN07_CP = "numeric",
+        RN07x01 = "numeric",
+        RN07x02 = "numeric",
+        RN07x03 = "numeric",
+        RN07x04 = "numeric",
+        RN08_CP = "numeric",
+        RN08x01 = "numeric",
+        RN08x02 = "numeric",
+        RN08x03 = "numeric",
+        RN08x04 = "numeric",
+        RA01_01 = "numeric",
+        RA01_02 = "numeric",
+        RA01_03 = "numeric",
+        RA01_04 = "numeric",
+        RA01_05 = "numeric",
+        RA01_06 = "numeric",
+        RA02_01 = "numeric",
+        RA02_02 = "numeric",
+        RA02_03 = "numeric",
+        RA02_04 = "numeric",
+        RA02_05 = "numeric",
+        RA02_06 = "numeric",
+        RA03_01 = "numeric",
+        RA03_02 = "numeric",
+        RA03_03 = "numeric",
+        RA03_04 = "numeric",
+        RA03_05 = "numeric",
+        RA03_06 = "numeric",
+        RA04_01 = "numeric",
+        RA04_02 = "numeric",
+        RA04_03 = "numeric",
+        RA04_04 = "numeric",
+        RA04_05 = "numeric",
+        RA04_06 = "numeric",
+        RA05_01 = "numeric",
+        RA05_02 = "numeric",
+        RA05_03 = "numeric",
+        RA05_04 = "numeric",
+        RA05_05 = "numeric",
+        RA05_06 = "numeric",
+        RA06_01 = "numeric",
+        RA06_02 = "numeric",
+        RA06_03 = "numeric",
+        RA06_04 = "numeric",
+        RA06_05 = "numeric",
+        RA06_06 = "numeric",
+        RA07_01 = "numeric",
+        RA07_02 = "numeric",
+        RA07_03 = "numeric",
+        RA07_04 = "numeric",
+        RA07_05 = "numeric",
+        RA07_06 = "numeric",
+        RA08_01 = "numeric",
+        RA08_02 = "numeric",
+        RA08_03 = "numeric",
+        RA08_04 = "numeric",
+        RA08_05 = "numeric",
+        RA08_06 = "numeric",
+        RA09_01 = "numeric",
+        RA09_02 = "numeric",
+        RA09_03 = "numeric",
+        RA09_04 = "numeric",
+        RA09_05 = "numeric",
+        RA09_06 = "numeric",
+        RA10_01 = "numeric",
+        RA10_02 = "numeric",
+        RA10_03 = "numeric",
+        RA10_04 = "numeric",
+        RA10_05 = "numeric",
+        RA10_06 = "numeric",
+        RA11_01 = "numeric",
+        RA11_02 = "numeric",
+        RA11_03 = "numeric",
+        RA11_04 = "numeric",
+        RA11_05 = "numeric",
+        RA11_06 = "numeric",
+        RA12_01 = "numeric",
+        RA12_02 = "numeric",
+        RA12_03 = "numeric",
+        RA12_04 = "numeric",
+        RA12_05 = "numeric",
+        RA12_06 = "numeric",
+        RA13_01 = "numeric",
+        RA13_02 = "numeric",
+        RA13_03 = "numeric",
+        RA13_04 = "numeric",
+        RA13_05 = "numeric",
+        RA13_06 = "numeric",
+        RA14_01 = "numeric",
+        RA14_02 = "numeric",
+        RA14_03 = "numeric",
+        RA14_04 = "numeric",
+        RA14_05 = "numeric",
+        RA14_06 = "numeric",
+        RA15_01 = "numeric",
+        RA15_02 = "numeric",
+        RA15_03 = "numeric",
+        RA15_04 = "numeric",
+        RA15_05 = "numeric",
+        RA15_06 = "numeric",
+        RA16_01 = "numeric",
+        RA16_02 = "numeric",
+        RA16_03 = "numeric",
+        RA16_04 = "numeric",
+        RA16_05 = "numeric",
+        RA16_06 = "numeric",
+        CO01 = "numeric",
+        CO02 = "numeric",
+        AW03_01 = "character",
+        AW04_01 = "character",
+        FB01 = "numeric",
+        FB02_01 = "character",
+        FB03_01 = "character",
+        FB04_01 = "character",
+        EI01_01 = "numeric",
+        EI01_02 = "numeric",
+        EI01_03 = "numeric",
+        EI01_04 = "numeric",
+        DE01_BNM = "numeric",
+        DE01_BVS = "character",
+        DE01_FmF = "numeric",
+        DE01_ScW = "numeric",
+        DE01_ScH = "numeric",
+        DE01_QnW = "numeric",
+        TIME001 = "integer",
+        TIME002 = "integer",
+        TIME003 = "integer",
+        TIME004 = "integer",
+        TIME005 = "integer",
+        TIME006 = "integer",
+        TIME007 = "integer",
+        TIME008 = "integer",
+        TIME009 = "integer",
+        TIME010 = "integer",
+        TIME011 = "integer",
+        TIME012 = "integer",
+        TIME_SUM = "integer",
+        MAILSENT = "POSIXct",
+        LASTDATA = "POSIXct",
+        FINISHED = "logical",
+        Q_VIEWER = "logical",
+        LASTPAGE = "numeric",
+        MAXPAGE = "numeric",
+        MISSING = "numeric",
+        MISSREL = "numeric",
+        TIME_RSI = "numeric",
+        DEG_TIME = "numeric"
+      ),
+      skip = 1,
+      check.names = TRUE,
+      fill = TRUE,
+      strip.white = FALSE,
+      blank.lines.skip = TRUE,
+      comment.char = "",
+      na.strings = ""
+    )
+    
+    rm(ds_file)
+    
+    attr(ds, "project") = "EmotionRecognition"
+    attr(ds, "description") = "EmotionRecognition"
+    attr(ds, "date") = "2018-07-04 15:51:31"
+    attr(ds, "server") = "https://www.soscisurvey.de"
+    
+    # Variable und Value Labels
+    ds$DG01 = factor(
+      ds$DG01,
+      levels = c("1", "2", "3", "-9"),
+      labels = c("weiblich", "männlich", "divers", "[NA] nicht beantwortet"),
+      ordered = FALSE
+    )
+    ds$DG03 = factor(
+      ds$DG03,
+      levels = c("1", "2", "3", "4", "5", "-9"),
+      labels = c(
+        "kein Abschluss",
+        "Mittelschule bzw. Hauptschule",
+        "Realschule",
+        "Gymnasium bzw. Fachoberschule",
+        "Universität bzw. Fachhochschule",
+        "[NA] nicht beantwortet"
+      ),
+      ordered = FALSE
+    )
+    ds$DG06 = factor(
+      ds$DG06,
+      levels = c("1", "2", "3", "4", "5", "6", "-9"),
+      labels = c(
+        "ledig",
+        "verheiratet (zusammen lebend)",
+        "verheiratet (getrennt lebend)",
+        "in einer Partnerschaft",
+        "geschieden",
+        "verwitwet",
+        "[NA] nicht beantwortet"
+      ),
+      ordered = FALSE
+    )
+    ds$DG07 = factor(
+      ds$DG07,
+      levels = c("1", "2", "3", "4", "5", "6", "7", "-9"),
+      labels = c(
+        "Schülerin bzw. Schüler",
+        "Studentin bzw. Student",
+        "Hausfrau bzw. Hausmann",
+        "vollzeiterwerbstätig (30 Stunden und mehr pro Woche)",
+        "teilzeiterwerbstätig (bis zu 29 Stunden pro Woche)",
+        "arbeitssuchend",
+        "Rentnerin bzw. Rentner",
+        "[NA] nicht beantwortet"
+      ),
+      ordered = FALSE
+    )
+    ds$DG09 = factor(
+      ds$DG09,
+      levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "-9"),
+      labels = c(
+        "Land-, Forst- und Tierwirtschaft und Gartenbau",
+        "Rohstoffgewinnung, Produktion und Fertigung",
+        "Bau, Architektur, Vermessung und Gebäudetechnik",
+        "Naturwissenschaft, Geografie und Informatik",
+        "Verkehr, Logistik, Schutz und Sicherheit",
+        "Kaufmännische Dienstleistungen, Warenhandel, Vertrieb, Hotel und Tourismus",
+        "Unternehmensorganisation, Buchhaltung, Recht und Verwaltung",
+        "Gesundheit, Soziales, Lehre und Erziehung",
+        "Sprach-, Literatur-, Geistes-, Gesellschafts- und Wirtschaftswissenschaften, Medien, Kunst, Kultur und Gestaltung",
+        "Militär",
+        "[NA] nicht beantwortet"
+      ),
+      ordered = FALSE
+    )
+    ds$CO01 = factor(
+      ds$CO01,
+      levels = c("1", "2", "3", "4", "-9"),
+      labels = c(
+        "Rot-Grün-Schwäche/Blindheit",
+        "Blau-Gelb-Schwäche/Blindheit",
+        "andere Beeinträchtigung",
+        "nein, mir ist keine Beeinträchtigung bekannt",
+        "[NA] nicht beantwortet"
+      ),
+      ordered = FALSE
+    )
+    ds$CO02 = factor(
+      ds$CO02,
+      levels = c("1", "2", "3", "4", "5", "6", "7", "-9"),
+      labels = c(
+        "Rot",
+        "Grün",
+        "Blau",
+        "Gelb",
+        "Weiß",
+        "Grau",
+        "Schwarz",
+        "[NA] nicht beantwortet"
+      ),
+      ordered = FALSE
+    )
+    ds$FB01 = factor(
+      ds$FB01,
+      levels = c("1", "2", "-9"),
+      labels = c(
+        "Nein, ich möchte keine individuelle Rückmeldung erhalten",
+        "Ja, ich möchte eine individuelle Rückmeldung erhalten",
+        "[NA] nicht beantwortet"
+      ),
+      ordered = FALSE
+    )
+    ds$DE01_BNM = factor(
+      ds$DE01_BNM,
+      levels = c(
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "-1",
+        "-2",
+        "-3"
+      ),
+      labels = c(
+        "Android WebView",
+        "Chrome",
+        "Chromium",
+        "Coast",
+        "Firefox",
+        "IE",
+        "Opera",
+        "Safari",
+        "Edge",
+        "Safari WebView",
+        "IE (mobile)",
+        "Edge (mobile)",
+        "[NA] Sonstiges",
+        "[NA] Default Browser",
+        "[NA] unbekannt"
+      ),
+      ordered = FALSE
+    )
+    ds$DE01_FmF = factor(
+      ds$DE01_FmF,
+      levels = c("1", "2", "3", "4", "5", "-2"),
+      labels = c(
+        "Computer",
+        "Fernsehgerät",
+        "Tablet",
+        "Mobilgerät",
+        "Smartphone",
+        "[NA] unbekannt"
+      ),
+      ordered = FALSE
+    )
+    attr(ds$RN01, "2") = "neutral"
+    attr(ds$RN01, "1") = "red"
+    attr(ds$RN02, "1") = "male"
+    attr(ds$RN02, "2") = "female"
+    attr(ds$RN03, "1") = "CFD-WM-002"
+    attr(ds$RN03, "2") = "CFD-WM-009"
+    attr(ds$RN03, "3") = "CFD-WM-018"
+    attr(ds$RN03, "4") = "CFD-WM-020"
+    attr(ds$RN03, "5") = "CFD-WM-023"
+    attr(ds$RN03, "6") = "CFD-WM-026"
+    attr(ds$RN03, "7") = "CFD-WM-028"
+    attr(ds$RN03, "8") = "CFD-WM-033"
+    attr(ds$RN03, "9") = "CFD-WM-039"
+    attr(ds$RN03, "10") = "CFD-WM-040"
+    attr(ds$RN04, "1") = "CFD-WF-006"
+    attr(ds$RN04, "2") = "CFD-WF-011"
+    attr(ds$RN04, "3") = "CFD-WF-013"
+    attr(ds$RN04, "4") = "CFD-WF-016"
+    attr(ds$RN04, "5") = "CFD-WF-019"
+    attr(ds$RN04, "6") = "CFD-WF-022"
+    attr(ds$RN04, "7") = "CFD-WF-023"
+    attr(ds$RN04, "8") = "CFD-WF-028"
+    attr(ds$RN04, "9") = "CFD-WF-029"
+    attr(ds$RN04, "10") = "CFD-WF-030"
+    attr(ds$RN05x01, "1") = "neutral"
+    attr(ds$RN05x01, "2") = "angry"
+    attr(ds$RN05x01, "3") = "fearful"
+    attr(ds$RN05x01, "4") = "happy"
+    attr(ds$RN05x02, "1") = "neutral"
+    attr(ds$RN05x02, "2") = "angry"
+    attr(ds$RN05x02, "3") = "fearful"
+    attr(ds$RN05x02, "4") = "happy"
+    attr(ds$RN05x03, "1") = "neutral"
+    attr(ds$RN05x03, "2") = "angry"
+    attr(ds$RN05x03, "3") = "fearful"
+    attr(ds$RN05x03, "4") = "happy"
+    attr(ds$RN05x04, "1") = "neutral"
+    attr(ds$RN05x04, "2") = "angry"
+    attr(ds$RN05x04, "3") = "fearful"
+    attr(ds$RN05x04, "4") = "happy"
+    attr(ds$RN06x01, "1") = "neutral"
+    attr(ds$RN06x01, "2") = "angry"
+    attr(ds$RN06x01, "3") = "fearful"
+    attr(ds$RN06x01, "4") = "happy"
+    attr(ds$RN06x02, "1") = "neutral"
+    attr(ds$RN06x02, "2") = "angry"
+    attr(ds$RN06x02, "3") = "fearful"
+    attr(ds$RN06x02, "4") = "happy"
+    attr(ds$RN06x03, "1") = "neutral"
+    attr(ds$RN06x03, "2") = "angry"
+    attr(ds$RN06x03, "3") = "fearful"
+    attr(ds$RN06x03, "4") = "happy"
+    attr(ds$RN06x04, "1") = "neutral"
+    attr(ds$RN06x04, "2") = "angry"
+    attr(ds$RN06x04, "3") = "fearful"
+    attr(ds$RN06x04, "4") = "happy"
+    attr(ds$RN07x01, "1") = "neutral"
+    attr(ds$RN07x01, "2") = "angry"
+    attr(ds$RN07x01, "3") = "fearful"
+    attr(ds$RN07x01, "4") = "happy"
+    attr(ds$RN07x02, "1") = "neutral"
+    attr(ds$RN07x02, "2") = "angry"
+    attr(ds$RN07x02, "3") = "fearful"
+    attr(ds$RN07x02, "4") = "happy"
+    attr(ds$RN07x03, "1") = "neutral"
+    attr(ds$RN07x03, "2") = "angry"
+    attr(ds$RN07x03, "3") = "fearful"
+    attr(ds$RN07x03, "4") = "happy"
+    attr(ds$RN07x04, "1") = "neutral"
+    attr(ds$RN07x04, "2") = "angry"
+    attr(ds$RN07x04, "3") = "fearful"
+    attr(ds$RN07x04, "4") = "happy"
+    attr(ds$RN08x01, "1") = "neutral"
+    attr(ds$RN08x01, "2") = "angry"
+    attr(ds$RN08x01, "3") = "fearful"
+    attr(ds$RN08x01, "4") = "happy"
+    attr(ds$RN08x02, "1") = "neutral"
+    attr(ds$RN08x02, "2") = "angry"
+    attr(ds$RN08x02, "3") = "fearful"
+    attr(ds$RN08x02, "4") = "happy"
+    attr(ds$RN08x03, "1") = "neutral"
+    attr(ds$RN08x03, "2") = "angry"
+    attr(ds$RN08x03, "3") = "fearful"
+    attr(ds$RN08x03, "4") = "happy"
+    attr(ds$RN08x04, "1") = "neutral"
+    attr(ds$RN08x04, "2") = "angry"
+    attr(ds$RN08x04, "3") = "fearful"
+    attr(ds$RN08x04, "4") = "happy"
+    attr(ds$RA01_01, "1") = "keine Freude [1]"
+    attr(ds$RA01_01, "7") = "extreme Freude [7]"
+    attr(ds$RA01_01, "2") = "[2]"
+    attr(ds$RA01_01, "3") = "[3]"
+    attr(ds$RA01_01, "4") = "[4]"
+    attr(ds$RA01_01, "5") = "[5]"
+    attr(ds$RA01_01, "6") = "[6]"
+    attr(ds$RA01_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA01_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA01_02, "2") = "[2]"
+    attr(ds$RA01_02, "3") = "[3]"
+    attr(ds$RA01_02, "4") = "[4]"
+    attr(ds$RA01_02, "5") = "[5]"
+    attr(ds$RA01_02, "6") = "[6]"
+    attr(ds$RA01_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA01_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA01_03, "2") = "[2]"
+    attr(ds$RA01_03, "3") = "[3]"
+    attr(ds$RA01_03, "4") = "[4]"
+    attr(ds$RA01_03, "5") = "[5]"
+    attr(ds$RA01_03, "6") = "[6]"
+    attr(ds$RA01_04, "1") = "keine Angst [1]"
+    attr(ds$RA01_04, "7") = "extreme Angst [7]"
+    attr(ds$RA01_04, "2") = "[2]"
+    attr(ds$RA01_04, "3") = "[3]"
+    attr(ds$RA01_04, "4") = "[4]"
+    attr(ds$RA01_04, "5") = "[5]"
+    attr(ds$RA01_04, "6") = "[6]"
+    attr(ds$RA01_05, "1") = "kein Ekel [1]"
+    attr(ds$RA01_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA01_05, "2") = "[2]"
+    attr(ds$RA01_05, "3") = "[3]"
+    attr(ds$RA01_05, "4") = "[4]"
+    attr(ds$RA01_05, "5") = "[5]"
+    attr(ds$RA01_05, "6") = "[6]"
+    attr(ds$RA01_06, "1") = "kein Ärger [1]"
+    attr(ds$RA01_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA01_06, "2") = "[2]"
+    attr(ds$RA01_06, "3") = "[3]"
+    attr(ds$RA01_06, "4") = "[4]"
+    attr(ds$RA01_06, "5") = "[5]"
+    attr(ds$RA01_06, "6") = "[6]"
+    attr(ds$RA02_01, "1") = "keine Freude [1]"
+    attr(ds$RA02_01, "7") = "extreme Freude [7]"
+    attr(ds$RA02_01, "2") = "[2]"
+    attr(ds$RA02_01, "3") = "[3]"
+    attr(ds$RA02_01, "4") = "[4]"
+    attr(ds$RA02_01, "5") = "[5]"
+    attr(ds$RA02_01, "6") = "[6]"
+    attr(ds$RA02_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA02_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA02_02, "2") = "[2]"
+    attr(ds$RA02_02, "3") = "[3]"
+    attr(ds$RA02_02, "4") = "[4]"
+    attr(ds$RA02_02, "5") = "[5]"
+    attr(ds$RA02_02, "6") = "[6]"
+    attr(ds$RA02_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA02_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA02_03, "2") = "[2]"
+    attr(ds$RA02_03, "3") = "[3]"
+    attr(ds$RA02_03, "4") = "[4]"
+    attr(ds$RA02_03, "5") = "[5]"
+    attr(ds$RA02_03, "6") = "[6]"
+    attr(ds$RA02_04, "1") = "keine Angst [1]"
+    attr(ds$RA02_04, "7") = "extreme Angst [7]"
+    attr(ds$RA02_04, "2") = "[2]"
+    attr(ds$RA02_04, "3") = "[3]"
+    attr(ds$RA02_04, "4") = "[4]"
+    attr(ds$RA02_04, "5") = "[5]"
+    attr(ds$RA02_04, "6") = "[6]"
+    attr(ds$RA02_05, "1") = "kein Ekel [1]"
+    attr(ds$RA02_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA02_05, "2") = "[2]"
+    attr(ds$RA02_05, "3") = "[3]"
+    attr(ds$RA02_05, "4") = "[4]"
+    attr(ds$RA02_05, "5") = "[5]"
+    attr(ds$RA02_05, "6") = "[6]"
+    attr(ds$RA02_06, "1") = "kein Ärger [1]"
+    attr(ds$RA02_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA02_06, "2") = "[2]"
+    attr(ds$RA02_06, "3") = "[3]"
+    attr(ds$RA02_06, "4") = "[4]"
+    attr(ds$RA02_06, "5") = "[5]"
+    attr(ds$RA02_06, "6") = "[6]"
+    attr(ds$RA03_01, "1") = "keine Freude [1]"
+    attr(ds$RA03_01, "7") = "extreme Freude [7]"
+    attr(ds$RA03_01, "2") = "[2]"
+    attr(ds$RA03_01, "3") = "[3]"
+    attr(ds$RA03_01, "4") = "[4]"
+    attr(ds$RA03_01, "5") = "[5]"
+    attr(ds$RA03_01, "6") = "[6]"
+    attr(ds$RA03_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA03_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA03_02, "2") = "[2]"
+    attr(ds$RA03_02, "3") = "[3]"
+    attr(ds$RA03_02, "4") = "[4]"
+    attr(ds$RA03_02, "5") = "[5]"
+    attr(ds$RA03_02, "6") = "[6]"
+    attr(ds$RA03_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA03_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA03_03, "2") = "[2]"
+    attr(ds$RA03_03, "3") = "[3]"
+    attr(ds$RA03_03, "4") = "[4]"
+    attr(ds$RA03_03, "5") = "[5]"
+    attr(ds$RA03_03, "6") = "[6]"
+    attr(ds$RA03_04, "1") = "keine Angst [1]"
+    attr(ds$RA03_04, "7") = "extreme Angst [7]"
+    attr(ds$RA03_04, "2") = "[2]"
+    attr(ds$RA03_04, "3") = "[3]"
+    attr(ds$RA03_04, "4") = "[4]"
+    attr(ds$RA03_04, "5") = "[5]"
+    attr(ds$RA03_04, "6") = "[6]"
+    attr(ds$RA03_05, "1") = "kein Ekel [1]"
+    attr(ds$RA03_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA03_05, "2") = "[2]"
+    attr(ds$RA03_05, "3") = "[3]"
+    attr(ds$RA03_05, "4") = "[4]"
+    attr(ds$RA03_05, "5") = "[5]"
+    attr(ds$RA03_05, "6") = "[6]"
+    attr(ds$RA03_06, "1") = "kein Ärger [1]"
+    attr(ds$RA03_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA03_06, "2") = "[2]"
+    attr(ds$RA03_06, "3") = "[3]"
+    attr(ds$RA03_06, "4") = "[4]"
+    attr(ds$RA03_06, "5") = "[5]"
+    attr(ds$RA03_06, "6") = "[6]"
+    attr(ds$RA04_01, "1") = "keine Freude [1]"
+    attr(ds$RA04_01, "7") = "extreme Freude [7]"
+    attr(ds$RA04_01, "2") = "[2]"
+    attr(ds$RA04_01, "3") = "[3]"
+    attr(ds$RA04_01, "4") = "[4]"
+    attr(ds$RA04_01, "5") = "[5]"
+    attr(ds$RA04_01, "6") = "[6]"
+    attr(ds$RA04_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA04_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA04_02, "2") = "[2]"
+    attr(ds$RA04_02, "3") = "[3]"
+    attr(ds$RA04_02, "4") = "[4]"
+    attr(ds$RA04_02, "5") = "[5]"
+    attr(ds$RA04_02, "6") = "[6]"
+    attr(ds$RA04_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA04_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA04_03, "2") = "[2]"
+    attr(ds$RA04_03, "3") = "[3]"
+    attr(ds$RA04_03, "4") = "[4]"
+    attr(ds$RA04_03, "5") = "[5]"
+    attr(ds$RA04_03, "6") = "[6]"
+    attr(ds$RA04_04, "1") = "keine Angst [1]"
+    attr(ds$RA04_04, "7") = "extreme Angst [7]"
+    attr(ds$RA04_04, "2") = "[2]"
+    attr(ds$RA04_04, "3") = "[3]"
+    attr(ds$RA04_04, "4") = "[4]"
+    attr(ds$RA04_04, "5") = "[5]"
+    attr(ds$RA04_04, "6") = "[6]"
+    attr(ds$RA04_05, "1") = "kein Ekel [1]"
+    attr(ds$RA04_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA04_05, "2") = "[2]"
+    attr(ds$RA04_05, "3") = "[3]"
+    attr(ds$RA04_05, "4") = "[4]"
+    attr(ds$RA04_05, "5") = "[5]"
+    attr(ds$RA04_05, "6") = "[6]"
+    attr(ds$RA04_06, "1") = "kein Ärger [1]"
+    attr(ds$RA04_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA04_06, "2") = "[2]"
+    attr(ds$RA04_06, "3") = "[3]"
+    attr(ds$RA04_06, "4") = "[4]"
+    attr(ds$RA04_06, "5") = "[5]"
+    attr(ds$RA04_06, "6") = "[6]"
+    attr(ds$RA05_01, "1") = "keine Freude [1]"
+    attr(ds$RA05_01, "7") = "extreme Freude [7]"
+    attr(ds$RA05_01, "2") = "[2]"
+    attr(ds$RA05_01, "3") = "[3]"
+    attr(ds$RA05_01, "4") = "[4]"
+    attr(ds$RA05_01, "5") = "[5]"
+    attr(ds$RA05_01, "6") = "[6]"
+    attr(ds$RA05_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA05_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA05_02, "2") = "[2]"
+    attr(ds$RA05_02, "3") = "[3]"
+    attr(ds$RA05_02, "4") = "[4]"
+    attr(ds$RA05_02, "5") = "[5]"
+    attr(ds$RA05_02, "6") = "[6]"
+    attr(ds$RA05_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA05_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA05_03, "2") = "[2]"
+    attr(ds$RA05_03, "3") = "[3]"
+    attr(ds$RA05_03, "4") = "[4]"
+    attr(ds$RA05_03, "5") = "[5]"
+    attr(ds$RA05_03, "6") = "[6]"
+    attr(ds$RA05_04, "1") = "keine Angst [1]"
+    attr(ds$RA05_04, "7") = "extreme Angst [7]"
+    attr(ds$RA05_04, "2") = "[2]"
+    attr(ds$RA05_04, "3") = "[3]"
+    attr(ds$RA05_04, "4") = "[4]"
+    attr(ds$RA05_04, "5") = "[5]"
+    attr(ds$RA05_04, "6") = "[6]"
+    attr(ds$RA05_05, "1") = "kein Ekel [1]"
+    attr(ds$RA05_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA05_05, "2") = "[2]"
+    attr(ds$RA05_05, "3") = "[3]"
+    attr(ds$RA05_05, "4") = "[4]"
+    attr(ds$RA05_05, "5") = "[5]"
+    attr(ds$RA05_05, "6") = "[6]"
+    attr(ds$RA05_06, "1") = "kein Ärger [1]"
+    attr(ds$RA05_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA05_06, "2") = "[2]"
+    attr(ds$RA05_06, "3") = "[3]"
+    attr(ds$RA05_06, "4") = "[4]"
+    attr(ds$RA05_06, "5") = "[5]"
+    attr(ds$RA05_06, "6") = "[6]"
+    attr(ds$RA06_01, "1") = "keine Freude [1]"
+    attr(ds$RA06_01, "7") = "extreme Freude [7]"
+    attr(ds$RA06_01, "2") = "[2]"
+    attr(ds$RA06_01, "3") = "[3]"
+    attr(ds$RA06_01, "4") = "[4]"
+    attr(ds$RA06_01, "5") = "[5]"
+    attr(ds$RA06_01, "6") = "[6]"
+    attr(ds$RA06_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA06_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA06_02, "2") = "[2]"
+    attr(ds$RA06_02, "3") = "[3]"
+    attr(ds$RA06_02, "4") = "[4]"
+    attr(ds$RA06_02, "5") = "[5]"
+    attr(ds$RA06_02, "6") = "[6]"
+    attr(ds$RA06_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA06_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA06_03, "2") = "[2]"
+    attr(ds$RA06_03, "3") = "[3]"
+    attr(ds$RA06_03, "4") = "[4]"
+    attr(ds$RA06_03, "5") = "[5]"
+    attr(ds$RA06_03, "6") = "[6]"
+    attr(ds$RA06_04, "1") = "keine Angst [1]"
+    attr(ds$RA06_04, "7") = "extreme Angst [7]"
+    attr(ds$RA06_04, "2") = "[2]"
+    attr(ds$RA06_04, "3") = "[3]"
+    attr(ds$RA06_04, "4") = "[4]"
+    attr(ds$RA06_04, "5") = "[5]"
+    attr(ds$RA06_04, "6") = "[6]"
+    attr(ds$RA06_05, "1") = "kein Ekel [1]"
+    attr(ds$RA06_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA06_05, "2") = "[2]"
+    attr(ds$RA06_05, "3") = "[3]"
+    attr(ds$RA06_05, "4") = "[4]"
+    attr(ds$RA06_05, "5") = "[5]"
+    attr(ds$RA06_05, "6") = "[6]"
+    attr(ds$RA06_06, "1") = "kein Ärger [1]"
+    attr(ds$RA06_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA06_06, "2") = "[2]"
+    attr(ds$RA06_06, "3") = "[3]"
+    attr(ds$RA06_06, "4") = "[4]"
+    attr(ds$RA06_06, "5") = "[5]"
+    attr(ds$RA06_06, "6") = "[6]"
+    attr(ds$RA07_01, "1") = "keine Freude [1]"
+    attr(ds$RA07_01, "7") = "extreme Freude [7]"
+    attr(ds$RA07_01, "2") = "[2]"
+    attr(ds$RA07_01, "3") = "[3]"
+    attr(ds$RA07_01, "4") = "[4]"
+    attr(ds$RA07_01, "5") = "[5]"
+    attr(ds$RA07_01, "6") = "[6]"
+    attr(ds$RA07_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA07_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA07_02, "2") = "[2]"
+    attr(ds$RA07_02, "3") = "[3]"
+    attr(ds$RA07_02, "4") = "[4]"
+    attr(ds$RA07_02, "5") = "[5]"
+    attr(ds$RA07_02, "6") = "[6]"
+    attr(ds$RA07_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA07_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA07_03, "2") = "[2]"
+    attr(ds$RA07_03, "3") = "[3]"
+    attr(ds$RA07_03, "4") = "[4]"
+    attr(ds$RA07_03, "5") = "[5]"
+    attr(ds$RA07_03, "6") = "[6]"
+    attr(ds$RA07_04, "1") = "keine Angst [1]"
+    attr(ds$RA07_04, "7") = "extreme Angst [7]"
+    attr(ds$RA07_04, "2") = "[2]"
+    attr(ds$RA07_04, "3") = "[3]"
+    attr(ds$RA07_04, "4") = "[4]"
+    attr(ds$RA07_04, "5") = "[5]"
+    attr(ds$RA07_04, "6") = "[6]"
+    attr(ds$RA07_05, "1") = "kein Ekel [1]"
+    attr(ds$RA07_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA07_05, "2") = "[2]"
+    attr(ds$RA07_05, "3") = "[3]"
+    attr(ds$RA07_05, "4") = "[4]"
+    attr(ds$RA07_05, "5") = "[5]"
+    attr(ds$RA07_05, "6") = "[6]"
+    attr(ds$RA07_06, "1") = "kein Ärger [1]"
+    attr(ds$RA07_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA07_06, "2") = "[2]"
+    attr(ds$RA07_06, "3") = "[3]"
+    attr(ds$RA07_06, "4") = "[4]"
+    attr(ds$RA07_06, "5") = "[5]"
+    attr(ds$RA07_06, "6") = "[6]"
+    attr(ds$RA08_01, "1") = "keine Freude [1]"
+    attr(ds$RA08_01, "7") = "extreme Freude [7]"
+    attr(ds$RA08_01, "2") = "[2]"
+    attr(ds$RA08_01, "3") = "[3]"
+    attr(ds$RA08_01, "4") = "[4]"
+    attr(ds$RA08_01, "5") = "[5]"
+    attr(ds$RA08_01, "6") = "[6]"
+    attr(ds$RA08_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA08_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA08_02, "2") = "[2]"
+    attr(ds$RA08_02, "3") = "[3]"
+    attr(ds$RA08_02, "4") = "[4]"
+    attr(ds$RA08_02, "5") = "[5]"
+    attr(ds$RA08_02, "6") = "[6]"
+    attr(ds$RA08_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA08_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA08_03, "2") = "[2]"
+    attr(ds$RA08_03, "3") = "[3]"
+    attr(ds$RA08_03, "4") = "[4]"
+    attr(ds$RA08_03, "5") = "[5]"
+    attr(ds$RA08_03, "6") = "[6]"
+    attr(ds$RA08_04, "1") = "keine Angst [1]"
+    attr(ds$RA08_04, "7") = "extreme Angst [7]"
+    attr(ds$RA08_04, "2") = "[2]"
+    attr(ds$RA08_04, "3") = "[3]"
+    attr(ds$RA08_04, "4") = "[4]"
+    attr(ds$RA08_04, "5") = "[5]"
+    attr(ds$RA08_04, "6") = "[6]"
+    attr(ds$RA08_05, "1") = "kein Ekel [1]"
+    attr(ds$RA08_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA08_05, "2") = "[2]"
+    attr(ds$RA08_05, "3") = "[3]"
+    attr(ds$RA08_05, "4") = "[4]"
+    attr(ds$RA08_05, "5") = "[5]"
+    attr(ds$RA08_05, "6") = "[6]"
+    attr(ds$RA08_06, "1") = "kein Ärger [1]"
+    attr(ds$RA08_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA08_06, "2") = "[2]"
+    attr(ds$RA08_06, "3") = "[3]"
+    attr(ds$RA08_06, "4") = "[4]"
+    attr(ds$RA08_06, "5") = "[5]"
+    attr(ds$RA08_06, "6") = "[6]"
+    attr(ds$RA09_01, "1") = "keine Freude [1]"
+    attr(ds$RA09_01, "7") = "extreme Freude [7]"
+    attr(ds$RA09_01, "2") = "[2]"
+    attr(ds$RA09_01, "3") = "[3]"
+    attr(ds$RA09_01, "4") = "[4]"
+    attr(ds$RA09_01, "5") = "[5]"
+    attr(ds$RA09_01, "6") = "[6]"
+    attr(ds$RA09_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA09_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA09_02, "2") = "[2]"
+    attr(ds$RA09_02, "3") = "[3]"
+    attr(ds$RA09_02, "4") = "[4]"
+    attr(ds$RA09_02, "5") = "[5]"
+    attr(ds$RA09_02, "6") = "[6]"
+    attr(ds$RA09_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA09_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA09_03, "2") = "[2]"
+    attr(ds$RA09_03, "3") = "[3]"
+    attr(ds$RA09_03, "4") = "[4]"
+    attr(ds$RA09_03, "5") = "[5]"
+    attr(ds$RA09_03, "6") = "[6]"
+    attr(ds$RA09_04, "1") = "keine Angst [1]"
+    attr(ds$RA09_04, "7") = "extreme Angst [7]"
+    attr(ds$RA09_04, "2") = "[2]"
+    attr(ds$RA09_04, "3") = "[3]"
+    attr(ds$RA09_04, "4") = "[4]"
+    attr(ds$RA09_04, "5") = "[5]"
+    attr(ds$RA09_04, "6") = "[6]"
+    attr(ds$RA09_05, "1") = "kein Ekel [1]"
+    attr(ds$RA09_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA09_05, "2") = "[2]"
+    attr(ds$RA09_05, "3") = "[3]"
+    attr(ds$RA09_05, "4") = "[4]"
+    attr(ds$RA09_05, "5") = "[5]"
+    attr(ds$RA09_05, "6") = "[6]"
+    attr(ds$RA09_06, "1") = "kein Ärger [1]"
+    attr(ds$RA09_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA09_06, "2") = "[2]"
+    attr(ds$RA09_06, "3") = "[3]"
+    attr(ds$RA09_06, "4") = "[4]"
+    attr(ds$RA09_06, "5") = "[5]"
+    attr(ds$RA09_06, "6") = "[6]"
+    attr(ds$RA10_01, "1") = "keine Freude [1]"
+    attr(ds$RA10_01, "7") = "extreme Freude [7]"
+    attr(ds$RA10_01, "2") = "[2]"
+    attr(ds$RA10_01, "3") = "[3]"
+    attr(ds$RA10_01, "4") = "[4]"
+    attr(ds$RA10_01, "5") = "[5]"
+    attr(ds$RA10_01, "6") = "[6]"
+    attr(ds$RA10_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA10_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA10_02, "2") = "[2]"
+    attr(ds$RA10_02, "3") = "[3]"
+    attr(ds$RA10_02, "4") = "[4]"
+    attr(ds$RA10_02, "5") = "[5]"
+    attr(ds$RA10_02, "6") = "[6]"
+    attr(ds$RA10_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA10_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA10_03, "2") = "[2]"
+    attr(ds$RA10_03, "3") = "[3]"
+    attr(ds$RA10_03, "4") = "[4]"
+    attr(ds$RA10_03, "5") = "[5]"
+    attr(ds$RA10_03, "6") = "[6]"
+    attr(ds$RA10_04, "1") = "keine Angst [1]"
+    attr(ds$RA10_04, "7") = "extreme Angst [7]"
+    attr(ds$RA10_04, "2") = "[2]"
+    attr(ds$RA10_04, "3") = "[3]"
+    attr(ds$RA10_04, "4") = "[4]"
+    attr(ds$RA10_04, "5") = "[5]"
+    attr(ds$RA10_04, "6") = "[6]"
+    attr(ds$RA10_05, "1") = "kein Ekel [1]"
+    attr(ds$RA10_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA10_05, "2") = "[2]"
+    attr(ds$RA10_05, "3") = "[3]"
+    attr(ds$RA10_05, "4") = "[4]"
+    attr(ds$RA10_05, "5") = "[5]"
+    attr(ds$RA10_05, "6") = "[6]"
+    attr(ds$RA10_06, "1") = "kein Ärger [1]"
+    attr(ds$RA10_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA10_06, "2") = "[2]"
+    attr(ds$RA10_06, "3") = "[3]"
+    attr(ds$RA10_06, "4") = "[4]"
+    attr(ds$RA10_06, "5") = "[5]"
+    attr(ds$RA10_06, "6") = "[6]"
+    attr(ds$RA11_01, "1") = "keine Freude [1]"
+    attr(ds$RA11_01, "7") = "extreme Freude [7]"
+    attr(ds$RA11_01, "2") = "[2]"
+    attr(ds$RA11_01, "3") = "[3]"
+    attr(ds$RA11_01, "4") = "[4]"
+    attr(ds$RA11_01, "5") = "[5]"
+    attr(ds$RA11_01, "6") = "[6]"
+    attr(ds$RA11_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA11_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA11_02, "2") = "[2]"
+    attr(ds$RA11_02, "3") = "[3]"
+    attr(ds$RA11_02, "4") = "[4]"
+    attr(ds$RA11_02, "5") = "[5]"
+    attr(ds$RA11_02, "6") = "[6]"
+    attr(ds$RA11_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA11_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA11_03, "2") = "[2]"
+    attr(ds$RA11_03, "3") = "[3]"
+    attr(ds$RA11_03, "4") = "[4]"
+    attr(ds$RA11_03, "5") = "[5]"
+    attr(ds$RA11_03, "6") = "[6]"
+    attr(ds$RA11_04, "1") = "keine Angst [1]"
+    attr(ds$RA11_04, "7") = "extreme Angst [7]"
+    attr(ds$RA11_04, "2") = "[2]"
+    attr(ds$RA11_04, "3") = "[3]"
+    attr(ds$RA11_04, "4") = "[4]"
+    attr(ds$RA11_04, "5") = "[5]"
+    attr(ds$RA11_04, "6") = "[6]"
+    attr(ds$RA11_05, "1") = "kein Ekel [1]"
+    attr(ds$RA11_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA11_05, "2") = "[2]"
+    attr(ds$RA11_05, "3") = "[3]"
+    attr(ds$RA11_05, "4") = "[4]"
+    attr(ds$RA11_05, "5") = "[5]"
+    attr(ds$RA11_05, "6") = "[6]"
+    attr(ds$RA11_06, "1") = "kein Ärger [1]"
+    attr(ds$RA11_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA11_06, "2") = "[2]"
+    attr(ds$RA11_06, "3") = "[3]"
+    attr(ds$RA11_06, "4") = "[4]"
+    attr(ds$RA11_06, "5") = "[5]"
+    attr(ds$RA11_06, "6") = "[6]"
+    attr(ds$RA12_01, "1") = "keine Freude [1]"
+    attr(ds$RA12_01, "7") = "extreme Freude [7]"
+    attr(ds$RA12_01, "2") = "[2]"
+    attr(ds$RA12_01, "3") = "[3]"
+    attr(ds$RA12_01, "4") = "[4]"
+    attr(ds$RA12_01, "5") = "[5]"
+    attr(ds$RA12_01, "6") = "[6]"
+    attr(ds$RA12_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA12_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA12_02, "2") = "[2]"
+    attr(ds$RA12_02, "3") = "[3]"
+    attr(ds$RA12_02, "4") = "[4]"
+    attr(ds$RA12_02, "5") = "[5]"
+    attr(ds$RA12_02, "6") = "[6]"
+    attr(ds$RA12_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA12_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA12_03, "2") = "[2]"
+    attr(ds$RA12_03, "3") = "[3]"
+    attr(ds$RA12_03, "4") = "[4]"
+    attr(ds$RA12_03, "5") = "[5]"
+    attr(ds$RA12_03, "6") = "[6]"
+    attr(ds$RA12_04, "1") = "keine Angst [1]"
+    attr(ds$RA12_04, "7") = "extreme Angst [7]"
+    attr(ds$RA12_04, "2") = "[2]"
+    attr(ds$RA12_04, "3") = "[3]"
+    attr(ds$RA12_04, "4") = "[4]"
+    attr(ds$RA12_04, "5") = "[5]"
+    attr(ds$RA12_04, "6") = "[6]"
+    attr(ds$RA12_05, "1") = "kein Ekel [1]"
+    attr(ds$RA12_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA12_05, "2") = "[2]"
+    attr(ds$RA12_05, "3") = "[3]"
+    attr(ds$RA12_05, "4") = "[4]"
+    attr(ds$RA12_05, "5") = "[5]"
+    attr(ds$RA12_05, "6") = "[6]"
+    attr(ds$RA12_06, "1") = "kein Ärger [1]"
+    attr(ds$RA12_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA12_06, "2") = "[2]"
+    attr(ds$RA12_06, "3") = "[3]"
+    attr(ds$RA12_06, "4") = "[4]"
+    attr(ds$RA12_06, "5") = "[5]"
+    attr(ds$RA12_06, "6") = "[6]"
+    attr(ds$RA13_01, "1") = "keine Freude [1]"
+    attr(ds$RA13_01, "7") = "extreme Freude [7]"
+    attr(ds$RA13_01, "2") = "[2]"
+    attr(ds$RA13_01, "3") = "[3]"
+    attr(ds$RA13_01, "4") = "[4]"
+    attr(ds$RA13_01, "5") = "[5]"
+    attr(ds$RA13_01, "6") = "[6]"
+    attr(ds$RA13_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA13_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA13_02, "2") = "[2]"
+    attr(ds$RA13_02, "3") = "[3]"
+    attr(ds$RA13_02, "4") = "[4]"
+    attr(ds$RA13_02, "5") = "[5]"
+    attr(ds$RA13_02, "6") = "[6]"
+    attr(ds$RA13_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA13_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA13_03, "2") = "[2]"
+    attr(ds$RA13_03, "3") = "[3]"
+    attr(ds$RA13_03, "4") = "[4]"
+    attr(ds$RA13_03, "5") = "[5]"
+    attr(ds$RA13_03, "6") = "[6]"
+    attr(ds$RA13_04, "1") = "keine Angst [1]"
+    attr(ds$RA13_04, "7") = "extreme Angst [7]"
+    attr(ds$RA13_04, "2") = "[2]"
+    attr(ds$RA13_04, "3") = "[3]"
+    attr(ds$RA13_04, "4") = "[4]"
+    attr(ds$RA13_04, "5") = "[5]"
+    attr(ds$RA13_04, "6") = "[6]"
+    attr(ds$RA13_05, "1") = "kein Ekel [1]"
+    attr(ds$RA13_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA13_05, "2") = "[2]"
+    attr(ds$RA13_05, "3") = "[3]"
+    attr(ds$RA13_05, "4") = "[4]"
+    attr(ds$RA13_05, "5") = "[5]"
+    attr(ds$RA13_05, "6") = "[6]"
+    attr(ds$RA13_06, "1") = "kein Ärger [1]"
+    attr(ds$RA13_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA13_06, "2") = "[2]"
+    attr(ds$RA13_06, "3") = "[3]"
+    attr(ds$RA13_06, "4") = "[4]"
+    attr(ds$RA13_06, "5") = "[5]"
+    attr(ds$RA13_06, "6") = "[6]"
+    attr(ds$RA14_01, "1") = "keine Freude [1]"
+    attr(ds$RA14_01, "7") = "extreme Freude [7]"
+    attr(ds$RA14_01, "2") = "[2]"
+    attr(ds$RA14_01, "3") = "[3]"
+    attr(ds$RA14_01, "4") = "[4]"
+    attr(ds$RA14_01, "5") = "[5]"
+    attr(ds$RA14_01, "6") = "[6]"
+    attr(ds$RA14_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA14_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA14_02, "2") = "[2]"
+    attr(ds$RA14_02, "3") = "[3]"
+    attr(ds$RA14_02, "4") = "[4]"
+    attr(ds$RA14_02, "5") = "[5]"
+    attr(ds$RA14_02, "6") = "[6]"
+    attr(ds$RA14_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA14_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA14_03, "2") = "[2]"
+    attr(ds$RA14_03, "3") = "[3]"
+    attr(ds$RA14_03, "4") = "[4]"
+    attr(ds$RA14_03, "5") = "[5]"
+    attr(ds$RA14_03, "6") = "[6]"
+    attr(ds$RA14_04, "1") = "keine Angst [1]"
+    attr(ds$RA14_04, "7") = "extreme Angst [7]"
+    attr(ds$RA14_04, "2") = "[2]"
+    attr(ds$RA14_04, "3") = "[3]"
+    attr(ds$RA14_04, "4") = "[4]"
+    attr(ds$RA14_04, "5") = "[5]"
+    attr(ds$RA14_04, "6") = "[6]"
+    attr(ds$RA14_05, "1") = "kein Ekel [1]"
+    attr(ds$RA14_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA14_05, "2") = "[2]"
+    attr(ds$RA14_05, "3") = "[3]"
+    attr(ds$RA14_05, "4") = "[4]"
+    attr(ds$RA14_05, "5") = "[5]"
+    attr(ds$RA14_05, "6") = "[6]"
+    attr(ds$RA14_06, "1") = "kein Ärger [1]"
+    attr(ds$RA14_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA14_06, "2") = "[2]"
+    attr(ds$RA14_06, "3") = "[3]"
+    attr(ds$RA14_06, "4") = "[4]"
+    attr(ds$RA14_06, "5") = "[5]"
+    attr(ds$RA14_06, "6") = "[6]"
+    attr(ds$RA15_01, "1") = "keine Freude [1]"
+    attr(ds$RA15_01, "7") = "extreme Freude [7]"
+    attr(ds$RA15_01, "2") = "[2]"
+    attr(ds$RA15_01, "3") = "[3]"
+    attr(ds$RA15_01, "4") = "[4]"
+    attr(ds$RA15_01, "5") = "[5]"
+    attr(ds$RA15_01, "6") = "[6]"
+    attr(ds$RA15_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA15_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA15_02, "2") = "[2]"
+    attr(ds$RA15_02, "3") = "[3]"
+    attr(ds$RA15_02, "4") = "[4]"
+    attr(ds$RA15_02, "5") = "[5]"
+    attr(ds$RA15_02, "6") = "[6]"
+    attr(ds$RA15_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA15_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA15_03, "2") = "[2]"
+    attr(ds$RA15_03, "3") = "[3]"
+    attr(ds$RA15_03, "4") = "[4]"
+    attr(ds$RA15_03, "5") = "[5]"
+    attr(ds$RA15_03, "6") = "[6]"
+    attr(ds$RA15_04, "1") = "keine Angst [1]"
+    attr(ds$RA15_04, "7") = "extreme Angst [7]"
+    attr(ds$RA15_04, "2") = "[2]"
+    attr(ds$RA15_04, "3") = "[3]"
+    attr(ds$RA15_04, "4") = "[4]"
+    attr(ds$RA15_04, "5") = "[5]"
+    attr(ds$RA15_04, "6") = "[6]"
+    attr(ds$RA15_05, "1") = "kein Ekel [1]"
+    attr(ds$RA15_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA15_05, "2") = "[2]"
+    attr(ds$RA15_05, "3") = "[3]"
+    attr(ds$RA15_05, "4") = "[4]"
+    attr(ds$RA15_05, "5") = "[5]"
+    attr(ds$RA15_05, "6") = "[6]"
+    attr(ds$RA15_06, "1") = "kein Ärger [1]"
+    attr(ds$RA15_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA15_06, "2") = "[2]"
+    attr(ds$RA15_06, "3") = "[3]"
+    attr(ds$RA15_06, "4") = "[4]"
+    attr(ds$RA15_06, "5") = "[5]"
+    attr(ds$RA15_06, "6") = "[6]"
+    attr(ds$RA16_01, "1") = "keine Freude [1]"
+    attr(ds$RA16_01, "7") = "extreme Freude [7]"
+    attr(ds$RA16_01, "2") = "[2]"
+    attr(ds$RA16_01, "3") = "[3]"
+    attr(ds$RA16_01, "4") = "[4]"
+    attr(ds$RA16_01, "5") = "[5]"
+    attr(ds$RA16_01, "6") = "[6]"
+    attr(ds$RA16_02, "1") = "keine Überraschung [1]"
+    attr(ds$RA16_02, "7") = "extreme Überraschung [7]"
+    attr(ds$RA16_02, "2") = "[2]"
+    attr(ds$RA16_02, "3") = "[3]"
+    attr(ds$RA16_02, "4") = "[4]"
+    attr(ds$RA16_02, "5") = "[5]"
+    attr(ds$RA16_02, "6") = "[6]"
+    attr(ds$RA16_03, "1") = "keine Traurigkeit [1]"
+    attr(ds$RA16_03, "7") = "extreme Traurigkeit [7]"
+    attr(ds$RA16_03, "2") = "[2]"
+    attr(ds$RA16_03, "3") = "[3]"
+    attr(ds$RA16_03, "4") = "[4]"
+    attr(ds$RA16_03, "5") = "[5]"
+    attr(ds$RA16_03, "6") = "[6]"
+    attr(ds$RA16_04, "1") = "keine Angst [1]"
+    attr(ds$RA16_04, "7") = "extreme Angst [7]"
+    attr(ds$RA16_04, "2") = "[2]"
+    attr(ds$RA16_04, "3") = "[3]"
+    attr(ds$RA16_04, "4") = "[4]"
+    attr(ds$RA16_04, "5") = "[5]"
+    attr(ds$RA16_04, "6") = "[6]"
+    attr(ds$RA16_05, "1") = "kein Ekel [1]"
+    attr(ds$RA16_05, "7") = "extremer Ekel [7]"
+    attr(ds$RA16_05, "2") = "[2]"
+    attr(ds$RA16_05, "3") = "[3]"
+    attr(ds$RA16_05, "4") = "[4]"
+    attr(ds$RA16_05, "5") = "[5]"
+    attr(ds$RA16_05, "6") = "[6]"
+    attr(ds$RA16_06, "1") = "kein Ärger [1]"
+    attr(ds$RA16_06, "7") = "extremer Ärger [7]"
+    attr(ds$RA16_06, "2") = "[2]"
+    attr(ds$RA16_06, "3") = "[3]"
+    attr(ds$RA16_06, "4") = "[4]"
+    attr(ds$RA16_06, "5") = "[5]"
+    attr(ds$RA16_06, "6") = "[6]"
+    attr(ds$EI01_01, "1") = "trifft überhaupt nicht zu"
+    attr(ds$EI01_01, "5") = "trifft vollkommen zu"
+    attr(ds$EI01_02, "1") = "trifft überhaupt nicht zu"
+    attr(ds$EI01_02, "5") = "trifft vollkommen zu"
+    attr(ds$EI01_03, "1") = "trifft überhaupt nicht zu"
+    attr(ds$EI01_03, "5") = "trifft vollkommen zu"
+    attr(ds$EI01_04, "1") = "trifft überhaupt nicht zu"
+    attr(ds$EI01_04, "5") = "trifft vollkommen zu"
+    attr(ds$FINISHED, "F") = "abgebrochen"
+    attr(ds$FINISHED, "T") = "ausgefüllt"
+    attr(ds$Q_VIEWER, "F") = "Teilnehmer"
+    attr(ds$Q_VIEWER, "T") = "Durchklicker"
+    comment(ds$SERIAL) = "Seriennummer (sofern verwendet)"
+    comment(ds$REF) = "Referenz (sofern im Link angegeben)"
+    comment(ds$QUESTNNR) = "Fragebogen, der im Interview verwendet wurde"
+    comment(ds$MODE) = "Interview-Modus"
+    comment(ds$STARTED) = "Zeitpunkt zu dem das Interview begonnen hat"
+    comment(ds$DG01) = "sex"
+    comment(ds$DG02_01) = "age:  ... Jahre"
+    comment(ds$DG03) = "education"
+    comment(ds$DG04_01) = "major_finished: [01]"
+    comment(ds$DG05_01) = "mark: [01]"
+    comment(ds$DG06) = "marital status"
+    comment(ds$DG07) = "working status"
+    comment(ds$DG08_01) = "major: [01]"
+    comment(ds$DG09) = "occupation"
+    comment(ds$RN01_CP) = "color: Vollständige Leerungen der Urne bisher"
+    comment(ds$RN01) = "color: Gezogener Code"
+    comment(ds$RN02_CP) = "gender: Vollständige Leerungen der Urne bisher"
+    comment(ds$RN02) = "gender: Gezogener Code"
+    comment(ds$RN03_CP) = "male person: Vollständige Leerungen der Urne bisher"
+    comment(ds$RN03) = "male person: Gezogener Code"
+    comment(ds$RN04_CP) = "female person: Vollständige Leerungen der Urne bisher"
+    comment(ds$RN04) = "female person: Gezogener Code"
+    comment(ds$RN05_CP) = "emotion expression block 1: Vollständige Leerungen der Urne bisher"
+    comment(ds$RN05x01) = "emotion expression block 1: Gezogener Code (1)"
+    comment(ds$RN05x02) = "emotion expression block 1: Gezogener Code (2)"
+    comment(ds$RN05x03) = "emotion expression block 1: Gezogener Code (3)"
+    comment(ds$RN05x04) = "emotion expression block 1: Gezogener Code (4)"
+    comment(ds$RN06_CP) = "emotion expression block 2: Vollständige Leerungen der Urne bisher"
+    comment(ds$RN06x01) = "emotion expression block 2: Gezogener Code (1)"
+    comment(ds$RN06x02) = "emotion expression block 2: Gezogener Code (2)"
+    comment(ds$RN06x03) = "emotion expression block 2: Gezogener Code (3)"
+    comment(ds$RN06x04) = "emotion expression block 2: Gezogener Code (4)"
+    comment(ds$RN07_CP) = "emotion expression block 3: Vollständige Leerungen der Urne bisher"
+    comment(ds$RN07x01) = "emotion expression block 3: Gezogener Code (1)"
+    comment(ds$RN07x02) = "emotion expression block 3: Gezogener Code (2)"
+    comment(ds$RN07x03) = "emotion expression block 3: Gezogener Code (3)"
+    comment(ds$RN07x04) = "emotion expression block 3: Gezogener Code (4)"
+    comment(ds$RN08_CP) = "emotion expression block 4: Vollständige Leerungen der Urne bisher"
+    comment(ds$RN08x01) = "emotion expression block 4: Gezogener Code (1)"
+    comment(ds$RN08x02) = "emotion expression block 4: Gezogener Code (2)"
+    comment(ds$RN08x03) = "emotion expression block 4: Gezogener Code (3)"
+    comment(ds$RN08x04) = "emotion expression block 4: Gezogener Code (4)"
+    comment(ds$RA01_01) = "red male neutral: keine Freude/extreme Freude"
+    comment(ds$RA01_02) = "red male neutral: keine Überraschung/extreme Überraschung"
+    comment(ds$RA01_03) = "red male neutral: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA01_04) = "red male neutral: keine Angst/extreme Angst"
+    comment(ds$RA01_05) = "red male neutral: kein Ekel/extremer Ekel"
+    comment(ds$RA01_06) = "red male neutral: kein Ärger/extremer Ärger"
+    comment(ds$RA02_01) = "red male angry: keine Freude/extreme Freude"
+    comment(ds$RA02_02) = "red male angry: keine Überraschung/extreme Überraschung"
+    comment(ds$RA02_03) = "red male angry: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA02_04) = "red male angry: keine Angst/extreme Angst"
+    comment(ds$RA02_05) = "red male angry: kein Ekel/extremer Ekel"
+    comment(ds$RA02_06) = "red male angry: kein Ärger/extremer Ärger"
+    comment(ds$RA03_01) = "red male fearful: keine Freude/extreme Freude"
+    comment(ds$RA03_02) = "red male fearful: keine Überraschung/extreme Überraschung"
+    comment(ds$RA03_03) = "red male fearful: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA03_04) = "red male fearful: keine Angst/extreme Angst"
+    comment(ds$RA03_05) = "red male fearful: kein Ekel/extremer Ekel"
+    comment(ds$RA03_06) = "red male fearful: kein Ärger/extremer Ärger"
+    comment(ds$RA04_01) = "red male happy: keine Freude/extreme Freude"
+    comment(ds$RA04_02) = "red male happy: keine Überraschung/extreme Überraschung"
+    comment(ds$RA04_03) = "red male happy: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA04_04) = "red male happy: keine Angst/extreme Angst"
+    comment(ds$RA04_05) = "red male happy: kein Ekel/extremer Ekel"
+    comment(ds$RA04_06) = "red male happy: kein Ärger/extremer Ärger"
+    comment(ds$RA05_01) = "red female neutral: keine Freude/extreme Freude"
+    comment(ds$RA05_02) = "red female neutral: keine Überraschung/extreme Überraschung"
+    comment(ds$RA05_03) = "red female neutral: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA05_04) = "red female neutral: keine Angst/extreme Angst"
+    comment(ds$RA05_05) = "red female neutral: kein Ekel/extremer Ekel"
+    comment(ds$RA05_06) = "red female neutral: kein Ärger/extremer Ärger"
+    comment(ds$RA06_01) = "red female angry: keine Freude/extreme Freude"
+    comment(ds$RA06_02) = "red female angry: keine Überraschung/extreme Überraschung"
+    comment(ds$RA06_03) = "red female angry: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA06_04) = "red female angry: keine Angst/extreme Angst"
+    comment(ds$RA06_05) = "red female angry: kein Ekel/extremer Ekel"
+    comment(ds$RA06_06) = "red female angry: kein Ärger/extremer Ärger"
+    comment(ds$RA07_01) = "red female fearful: keine Freude/extreme Freude"
+    comment(ds$RA07_02) = "red female fearful: keine Überraschung/extreme Überraschung"
+    comment(ds$RA07_03) = "red female fearful: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA07_04) = "red female fearful: keine Angst/extreme Angst"
+    comment(ds$RA07_05) = "red female fearful: kein Ekel/extremer Ekel"
+    comment(ds$RA07_06) = "red female fearful: kein Ärger/extremer Ärger"
+    comment(ds$RA08_01) = "red female happy: keine Freude/extreme Freude"
+    comment(ds$RA08_02) = "red female happy: keine Überraschung/extreme Überraschung"
+    comment(ds$RA08_03) = "red female happy: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA08_04) = "red female happy: keine Angst/extreme Angst"
+    comment(ds$RA08_05) = "red female happy: kein Ekel/extremer Ekel"
+    comment(ds$RA08_06) = "red female happy: kein Ärger/extremer Ärger"
+    comment(ds$RA09_01) = "original male neutral: keine Freude/extreme Freude"
+    comment(ds$RA09_02) = "original male neutral: keine Überraschung/extreme Überraschung"
+    comment(ds$RA09_03) = "original male neutral: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA09_04) = "original male neutral: keine Angst/extreme Angst"
+    comment(ds$RA09_05) = "original male neutral: kein Ekel/extremer Ekel"
+    comment(ds$RA09_06) = "original male neutral: kein Ärger/extremer Ärger"
+    comment(ds$RA10_01) = "original male angry: keine Freude/extreme Freude"
+    comment(ds$RA10_02) = "original male angry: keine Überraschung/extreme Überraschung"
+    comment(ds$RA10_03) = "original male angry: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA10_04) = "original male angry: keine Angst/extreme Angst"
+    comment(ds$RA10_05) = "original male angry: kein Ekel/extremer Ekel"
+    comment(ds$RA10_06) = "original male angry: kein Ärger/extremer Ärger"
+    comment(ds$RA11_01) = "original male fearful: keine Freude/extreme Freude"
+    comment(ds$RA11_02) = "original male fearful: keine Überraschung/extreme Überraschung"
+    comment(ds$RA11_03) = "original male fearful: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA11_04) = "original male fearful: keine Angst/extreme Angst"
+    comment(ds$RA11_05) = "original male fearful: kein Ekel/extremer Ekel"
+    comment(ds$RA11_06) = "original male fearful: kein Ärger/extremer Ärger"
+    comment(ds$RA12_01) = "original male happy: keine Freude/extreme Freude"
+    comment(ds$RA12_02) = "original male happy: keine Überraschung/extreme Überraschung"
+    comment(ds$RA12_03) = "original male happy: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA12_04) = "original male happy: keine Angst/extreme Angst"
+    comment(ds$RA12_05) = "original male happy: kein Ekel/extremer Ekel"
+    comment(ds$RA12_06) = "original male happy: kein Ärger/extremer Ärger"
+    comment(ds$RA13_01) = "original female neutral: keine Freude/extreme Freude"
+    comment(ds$RA13_02) = "original female neutral: keine Überraschung/extreme Überraschung"
+    comment(ds$RA13_03) = "original female neutral: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA13_04) = "original female neutral: keine Angst/extreme Angst"
+    comment(ds$RA13_05) = "original female neutral: kein Ekel/extremer Ekel"
+    comment(ds$RA13_06) = "original female neutral: kein Ärger/extremer Ärger"
+    comment(ds$RA14_01) = "original female angry: keine Freude/extreme Freude"
+    comment(ds$RA14_02) = "original female angry: keine Überraschung/extreme Überraschung"
+    comment(ds$RA14_03) = "original female angry: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA14_04) = "original female angry: keine Angst/extreme Angst"
+    comment(ds$RA14_05) = "original female angry: kein Ekel/extremer Ekel"
+    comment(ds$RA14_06) = "original female angry: kein Ärger/extremer Ärger"
+    comment(ds$RA15_01) = "original female fearful: keine Freude/extreme Freude"
+    comment(ds$RA15_02) = "original female fearful: keine Überraschung/extreme Überraschung"
+    comment(ds$RA15_03) = "original female fearful: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA15_04) = "original female fearful: keine Angst/extreme Angst"
+    comment(ds$RA15_05) = "original female fearful: kein Ekel/extremer Ekel"
+    comment(ds$RA15_06) = "original female fearful: kein Ärger/extremer Ärger"
+    comment(ds$RA16_01) = "original female happy: keine Freude/extreme Freude"
+    comment(ds$RA16_02) = "original female happy: keine Überraschung/extreme Überraschung"
+    comment(ds$RA16_03) = "original female happy: keine Traurigkeit/extreme Traurigkeit"
+    comment(ds$RA16_04) = "original female happy: keine Angst/extreme Angst"
+    comment(ds$RA16_05) = "original female happy: kein Ekel/extremer Ekel"
+    comment(ds$RA16_06) = "original female happy: kein Ärger/extremer Ärger"
+    comment(ds$CO01) = "color vision"
+    comment(ds$CO02) = "favorite color"
+    comment(ds$AW03_01) = "salience: [01]"
+    comment(ds$AW04_01) = "awareness: [01]"
+    comment(ds$FB01) = "request_feedback"
+    comment(ds$FB02_01) = "correct_male: [Keine Beschreibung] 01"
+    comment(ds$FB03_01) = "correct_female: [Keine Beschreibung] 01"
+    comment(ds$FB04_01) = "correct_total: [Keine Beschreibung] 01"
+    comment(ds$EI01_01) = "SREIS: Wenn ich den Gesichtsausdruck von anderen Menschen sehe, kann ich deren Gefühle erkennen."
+    comment(ds$EI01_02) = "SREIS: Ich bin mir der nonverbalen Botschaften bewusst, die von anderen Menschen ausgesendet werden."
+    comment(ds$EI01_03) = "SREIS: Am Gesichtsausdruck meines Gegenübers kann ich erkennen, ob ich belogen werde."
+    comment(ds$EI01_04) = "SREIS: Meine ersten Eindrücke über die Gefühlswelt anderer sind gewöhnlich falsch."
+    comment(ds$DE01_BNM) = "Browser"
+    comment(ds$DE01_BVS) = "Browser-Version"
+    comment(ds$DE01_FmF) = "Format"
+    comment(ds$DE01_ScW) = "Bildschirmbreite"
+    comment(ds$DE01_ScH) = "Bildschirmhöhe"
+    comment(ds$DE01_QnW) = "Fragebogen-Breite"
+    comment(ds$TIME001) = "Verweildauer Seite 1"
+    comment(ds$TIME002) = "Verweildauer Seite 2"
+    comment(ds$TIME003) = "Verweildauer Seite 3"
+    comment(ds$TIME004) = "Verweildauer Seite 4"
+    comment(ds$TIME005) = "Verweildauer Seite 5"
+    comment(ds$TIME006) = "Verweildauer Seite 6"
+    comment(ds$TIME007) = "Verweildauer Seite 7"
+    comment(ds$TIME008) = "Verweildauer Seite 8"
+    comment(ds$TIME009) = "Verweildauer Seite 9"
+    comment(ds$TIME010) = "Verweildauer Seite 10"
+    comment(ds$TIME011) = "Verweildauer Seite 11"
+    comment(ds$TIME012) = "Verweildauer Seite 12"
+    comment(ds$TIME_SUM) = "Verweildauer gesamt (ohne Ausreißer)"
+    comment(ds$MAILSENT) = "Versandzeitpunkt der Einladungsmail (nur für nicht-anonyme Adressaten)"
+    comment(ds$LASTDATA) = "Zeitpunkt als der Datensatz das letzte mal geändert wurde"
+    comment(ds$FINISHED) = "Wurde die Befragung abgeschlossen (letzte Seite erreicht)?"
+    comment(ds$Q_VIEWER) = "Hat der Teilnehmer den Fragebogen nur angesehen, ohne die Pflichtfragen zu beantworten?"
+    comment(ds$LASTPAGE) = "Seite, die der Teilnehmer zuletzt bearbeitet hat"
+    comment(ds$MAXPAGE) = "Letzte Seite, die im Fragebogen bearbeitet wurde"
+    comment(ds$MISSING) = "Anteil fehlender Antworten in Prozent"
+    comment(ds$MISSREL) = "Anteil fehlender Antworten (gewichtet nach Relevanz)"
+    comment(ds$TIME_RSI) = "Maluspunkte für schnelles Ausfüllen"
+    comment(ds$DEG_TIME) = "Maluspunkte für schnelles Ausfüllen"
+    
+    
+    
+    # Assure that the comments are retained in subsets
+    as.data.frame.avector = as.data.frame.vector
+    `[.avector` <- function(x, i, ...) {
+      r <- NextMethod("[")
+      mostattributes(r) <- attributes(x)
+      r
+    }
+    ds_tmp = data.frame(lapply(ds, function(x) {
+      structure(x, class = c("avector", class(x)))
+    }))
+    mostattributes(ds_tmp) = attributes(ds)
+    ds = ds_tmp
+    rm(ds_tmp)
+    
+    data_raw <- ds %>%
+      mutate(subject = 1:nrow(.),
+             rating_time = TIME005 + TIME006 + TIME007 + TIME008) %>%
+      rename(
+        gender = DG01,
+        age = DG02_01,
+        face_male = RN03,
+        face_female = RN04,
+        red_male_neutral_happiness = RA01_01,
+        red_male_neutral_surprise = RA01_02,
+        red_male_neutral_sadness = RA01_03,
+        red_male_neutral_fear = RA01_04,
+        red_male_neutral_disgust = RA01_05,
+        red_male_neutral_anger = RA01_06,
+        red_male_anger_happiness = RA02_01,
+        red_male_anger_surprise = RA02_02,
+        red_male_anger_sadness = RA02_03,
+        red_male_anger_fear = RA02_04,
+        red_male_anger_disgust = RA02_05,
+        red_male_anger_anger = RA02_06,
+        red_male_fear_happiness = RA03_01,
+        red_male_fear_surprise = RA03_02,
+        red_male_fear_sadness = RA03_03,
+        red_male_fear_fear = RA03_04,
+        red_male_fear_disgust = RA03_05,
+        red_male_fear_anger = RA03_06,
+        red_male_happiness_happiness = RA04_01,
+        red_male_happiness_surprise = RA04_02,
+        red_male_happiness_sadness = RA04_03,
+        red_male_happiness_fear = RA04_04,
+        red_male_happiness_disgust = RA04_05,
+        red_male_happiness_anger = RA04_06,
+        red_female_neutral_happiness = RA05_01,
+        red_female_neutral_surprise = RA05_02,
+        red_female_neutral_sadness = RA05_03,
+        red_female_neutral_fear = RA05_04,
+        red_female_neutral_disgust = RA05_05,
+        red_female_neutral_anger = RA05_06,
+        red_female_anger_happiness = RA06_01,
+        red_female_anger_surprise = RA06_02,
+        red_female_anger_sadness = RA06_03,
+        red_female_anger_fear = RA06_04,
+        red_female_anger_disgust = RA06_05,
+        red_female_anger_anger = RA06_06,
+        red_female_fear_happiness = RA07_01,
+        red_female_fear_surprise = RA07_02,
+        red_female_fear_sadness = RA07_03,
+        red_female_fear_fear = RA07_04,
+        red_female_fear_disgust = RA07_05,
+        red_female_fear_anger = RA07_06,
+        red_female_happiness_happiness = RA08_01,
+        red_female_happiness_surprise = RA08_02,
+        red_female_happiness_sadness = RA08_03,
+        red_female_happiness_fear = RA08_04,
+        red_female_happiness_disgust = RA08_05,
+        red_female_happiness_anger = RA08_06,
+        neutral_male_neutral_happiness = RA09_01,
+        neutral_male_neutral_surprise = RA09_02,
+        neutral_male_neutral_sadness = RA09_03,
+        neutral_male_neutral_fear = RA09_04,
+        neutral_male_neutral_disgust = RA09_05,
+        neutral_male_neutral_anger = RA09_06,
+        neutral_male_anger_happiness = RA10_01,
+        neutral_male_anger_surprise = RA10_02,
+        neutral_male_anger_sadness = RA10_03,
+        neutral_male_anger_fear = RA10_04,
+        neutral_male_anger_disgust = RA10_05,
+        neutral_male_anger_anger = RA10_06,
+        neutral_male_fear_happiness = RA11_01,
+        neutral_male_fear_surprise = RA11_02,
+        neutral_male_fear_sadness = RA11_03,
+        neutral_male_fear_fear = RA11_04,
+        neutral_male_fear_disgust = RA11_05,
+        neutral_male_fear_anger = RA11_06,
+        neutral_male_happiness_happiness = RA12_01,
+        neutral_male_happiness_surprise = RA12_02,
+        neutral_male_happiness_sadness = RA12_03,
+        neutral_male_happiness_fear = RA12_04,
+        neutral_male_happiness_disgust = RA12_05,
+        neutral_male_happiness_anger = RA12_06,
+        neutral_female_neutral_happiness = RA13_01,
+        neutral_female_neutral_surprise = RA13_02,
+        neutral_female_neutral_sadness = RA13_03,
+        neutral_female_neutral_fear = RA13_04,
+        neutral_female_neutral_disgust = RA13_05,
+        neutral_female_neutral_anger = RA13_06,
+        neutral_female_anger_happiness = RA14_01,
+        neutral_female_anger_surprise = RA14_02,
+        neutral_female_anger_sadness = RA14_03,
+        neutral_female_anger_fear = RA14_04,
+        neutral_female_anger_disgust = RA14_05,
+        neutral_female_anger_anger = RA14_06,
+        neutral_female_fear_happiness = RA15_01,
+        neutral_female_fear_surprise = RA15_02,
+        neutral_female_fear_sadness = RA15_03,
+        neutral_female_fear_fear = RA15_04,
+        neutral_female_fear_disgust = RA15_05,
+        neutral_female_fear_anger = RA15_06,
+        neutral_female_happiness_happiness = RA16_01,
+        neutral_female_happiness_surprise = RA16_02,
+        neutral_female_happiness_sadness = RA16_03,
+        neutral_female_happiness_fear = RA16_04,
+        neutral_female_happiness_disgust = RA16_05,
+        neutral_female_happiness_anger = RA16_06,
+        color_impairment = CO01,
+        feedback_request = FB01
+      ) %>%
+      as_tibble()
+    
+    data_small <- data_raw %>%
+      filter(
+        MODE == "interview",
+        age >= 18,
+        as.numeric(gender) <= 3,
+        as.numeric(color_impairment) == 4,
+        #rating_time >= 6*16*3
+      ) %>%
+      select(
+        subject,
+        gender,
+        age,
+        RN01,
+        RN02,
+        face_male,
+        face_female,
+        red_male_neutral_happiness:neutral_female_happiness_anger
+      ) %>% as_tibble()
+    
+    data_long <- data_small %>%
+      mutate_if(is.double, as.integer) %>%
+      pivot_longer(
+        cols = red_male_neutral_happiness:neutral_female_happiness_anger,
+        names_to = c(
+          "face_color",
+          "face_gender",
+          "face_expression",
+          "rated_emotion"
+        ),
+        names_pattern = "(.*)_(.*)_(.*)_(.*)",
+        values_to = "rating"
+      ) %>%
+      mutate(
+        face = case_when(
+          face_gender == "male" ~ as.numeric(face_male),
+          # Gesichter sollen von 1-20 gehen, 1-10 männl. 11-20
+          face_gender == "female" ~ as.numeric(face_female) + 10
+        )
+      ) %>%
+      mutate(block = case_when (((
+        .$RN01 == 1 &
+          .$RN02 == 1 &
+          .$face_color == "red" & .$face_gender == "male"
+      ) ~ 1
+      ),
+      ((
+        .$RN01 == 1 &
+          .$RN02 == 2 &
+          .$face_color == "red" & .$face_gender == "male"
+      ) ~ 4
+      ),
+      ((
+        .$RN01 == 2 &
+          .$RN02 == 1 &
+          .$face_color == "red" & .$face_gender == "male"
+      ) ~ 3
+      ),
+      ((
+        .$RN01 == 2 &
+          .$RN02 == 2 &
+          .$face_color == "red" & .$face_gender == "male"
+      ) ~ 2
+      ),
+      ((
+        .$RN01 == 1 &
+          .$RN02 == 1 &
+          .$face_color == "red" & .$face_gender == "female"
+      ) ~ 4
+      ),
+      ((
+        .$RN01 == 1 &
+          .$RN02 == 2 &
+          .$face_color == "red" & .$face_gender == "female"
+      ) ~ 1
+      ),
+      ((
+        .$RN01 == 2 &
+          .$RN02 == 1 &
+          .$face_color == "red" & .$face_gender == "female"
+      ) ~ 2
+      ),
+      ((
+        .$RN01 == 2 &
+          .$RN02 == 2 &
+          .$face_color == "red" & .$face_gender == "female"
+      ) ~ 3
+      ),
+      ((
+        .$RN01 == 1 &
+          .$RN02 == 1 &
+          .$face_color == "neutral" & .$face_gender == "male"
+      ) ~ 3
+      ),
+      ((
+        .$RN01 == 1 &
+          .$RN02 == 2 &
+          .$face_color == "neutral" & .$face_gender == "male"
+      ) ~ 2
+      ),
+      ((
+        .$RN01 == 2 &
+          .$RN02 == 1 &
+          .$face_color == "neutral" & .$face_gender == "male"
+      ) ~ 1
+      ),
+      ((
+        .$RN01 == 2 &
+          .$RN02 == 2 &
+          .$face_color == "neutral" & .$face_gender == "male"
+      ) ~ 4
+      ),
+      ((
+        .$RN01 == 1 &
+          .$RN02 == 1 &
+          .$face_color == "neutral" & .$face_gender == "female"
+      ) ~ 2
+      ),
+      ((
+        .$RN01 == 1 &
+          .$RN02 == 2 &
+          .$face_color == "neutral" & .$face_gender == "female"
+      ) ~ 3
+      ),
+      ((
+        .$RN01 == 2 &
+          .$RN02 == 1 &
+          .$face_color == "neutral" & .$face_gender == "female"
+      ) ~ 4
+      ),
+      ((
+        .$RN01 == 2 &
+          .$RN02 == 2 &
+          .$face_color == "neutral" & .$face_gender == "female"
+      ) ~ 1
+      )
+      ))
+    data_long <- data_long %>%
+      mutate(
+        match_emotion = case_when(face_expression == rated_emotion ~ "yes",
+                                  TRUE ~ "no"),
+        type_emotion = case_when(
+          grepl("anger|happiness", face_expression) ~ "approach",
+          grepl("fear", face_expression) ~ "avoidance",
+          TRUE ~ "neutral"
+        ),
+        type_emotion = as_factor(type_emotion),
+        face_gender = as_factor(face_gender),
+        face_color = as_factor(face_color),
+        face_expression = as_factor(face_expression),
+        rated_emotion = as_factor(rated_emotion),
+        match_emotion = as_factor(match_emotion),
+        rating_fct = as_factor(rating)
+      )
+    
+    write_csv2(data_long, "data/long_colorData.csv")
+  } else {
+    read_csv2("data/long_colorData.csv")
+  }
+}
+  
+```
+
+# get the data
+This gets the data. Important, you have to set the data folder!
+
+```{r}
+
+data_long <- get_data(data_folder)
+```
+
+```{r}
+data_long <- data_long %>%
+  mutate(
+    happiness = case_when(rated_emotion == "happiness" ~ 1,
+                             TRUE ~ 0),
+    anger = case_when(rated_emotion == "anger" ~ 1,
+                         TRUE ~ 0),
+    fear = case_when(rated_emotion == "fear" ~ 1,
+                        TRUE ~ 0)
+  )
+
+data_h2 <- data_long %>% 
+  filter (match_emotion == "yes") %>% 
+  filter (happiness == 1 | anger == 1 | fear == 1)
+```
+
+
+## understanding the data
+
+do people react to the pictures differently??
+```{r}
+ggplot (data_long, aes(x = face, y = rating)) + 
+  geom_smooth()+
+  facet_grid(face_expression*rated_emotion~face_gender)
+```
+
+```{r}
+skimr::skim(data_long)
+```
+#Descriptive stats
+```{r}
+data_long %>% 
+  distinct(subject,gender,age) %>% 
+  arsenal::tableby(~ gender + as.numeric(age), data=.) %>% 
+  summary()
+```
+
+
+# Barplots für jeden Emotionsausdruck und Emotionsrating und rot vs non-rot - male vs. female
+# rating auf x 
+# y häuigkeit
+# color/ group rot vs. neutral
+# grid für jede emotion x rating
+
+```{r}
+proportions<-data_long %>% 
+  group_by(face_color,rated_emotion,face_expression,rating) %>% 
+  dplyr::summarise(n=n()) %>% 
+  dplyr::mutate(prop = n/ sum(n),
+                upperE=1.96*sqrt(prop*(1-(prop))/sum(n)),
+                lowerE=-1.96*sqrt(prop*(1-(prop))/sum(n)))
+
+
+means <- data_long %>%
+  summarySEwithin(
+    .,
+    measurevar = "rating",
+    withinvars = c(
+      "face_color",
+      "rated_emotion",
+      "face_expression"
+    ),
+    idvar = "subject",
+  ) %>% mutate(mean = rating)
+
+
+
+
+proportion_with_means <- proportions %>%
+  left_join(means %>% select(-rating),
+            by = c(
+              "face_color",
+              "rated_emotion",
+              "face_expression"
+            ))
+
+
+```
+
+
+```{r}
+ggplot(proportion_with_means,aes(x = as.factor(rating),y = prop, group = face_color,fill = face_color)) + 
+  geom_bar(stat="identity",position = "dodge") +
+  geom_errorbar(aes(ymin = prop+lowerE, ymax = prop+upperE),width = .2, position=position_dodge(.9))+
+  facet_grid(face_expression~rated_emotion)+
+  scale_fill_manual(values=c("darkgrey", "red"),
+                    name = "Facial colouration",
+                    labels = c("default","increased redness")) + 
+  theme_bw() + 
+  theme(legend.position = "bottom") +
+  geom_pointrange(aes(x=mean, y=-.1, xmin=mean - sd, xmax=mean + sd, color = face_color), size = .5,position=ggstance::position_dodgev(height=0.1))+
+  scale_color_manual(values=c("darkgrey", "red"),
+                    name = "Facial colouration",
+                    labels = c("default","increased redness")) +
+  scale_x_discrete(name= "Rated intensity") + 
+  scale_y_continuous(name = "Proportion of participants")
+ggsave("means_proportion_descriptives_responses.png",dpi = 1200)
+
+```
+people recognize the respective emotion which is displayed. But red does not change that. Also we do not see a difference depending on intensity based on gender.
+
+```{r}
+
+proportions<-data_long %>% 
+  group_by(face_color,rated_emotion,face_expression,face_gender,rating) %>% 
+  dplyr::summarise(n=n()) %>% 
+  dplyr::mutate(prop = n/ sum(n),
+                upperE=1.96*sqrt(prop*(1-(prop))/sum(n)),
+                lowerE=-1.96*sqrt(prop*(1-(prop))/sum(n)))
+
+
+means <- data_long %>%
+  summarySEwithin(
+    .,
+    measurevar = "rating",
+    withinvars = c(
+      "face_color",
+      "rated_emotion",
+      "face_expression",
+      "face_gender"
+    ),
+    idvar = "subject",
+  ) %>% mutate(mean = rating)
+
+
+
+
+proportion_with_means <- proportions %>%
+  left_join(means %>% select(-rating),
+            by = c(
+              "face_color",
+              "rated_emotion",
+              "face_expression",
+              "face_gender"
+            ))
+
+ggplot(proportion_with_means,aes(x = as.factor(rating),y = prop, group = face_color,fill = face_color)) + 
+  geom_bar(stat="identity",position = "dodge") +
+  geom_errorbar(aes(ymin = prop+lowerE, ymax = prop+upperE),width = .2, position=position_dodge(.9))+
+  facet_grid(face_expression*face_gender~rated_emotion)+
+  scale_fill_manual(values=c("darkgrey", "red"),
+                    name = "Facial colouration",
+                    labels = c("default","increased redness")) + 
+  theme_bw() + 
+  theme(legend.position='bottom')+
+  geom_pointrange(aes(x=mean, y=-.1, xmin=mean - sd, xmax=mean + sd, color = face_color), size = .5,position=ggstance::position_dodgev(height=0.1))+
+  scale_color_manual(values=c("darkgrey", "red"),
+                    name = "Facial colouration",
+                    labels = c("default","increased redness")) +
+  scale_x_discrete(name= "Rated intensity") + 
+  scale_y_continuous(name = "Proportion of participants") + 
+ggsave("means_proportion_face_gender_descriptives_responses.png",dpi = 1200, )
+```
+
+The rating of intensity are not independent this means when one is high, the others is low.
+```{r}
+ggplot(data_long,
+       aes(y = as.factor(rated_emotion),x = rating)) + 
+  geom_jitter(alpha = .1) +
+  facet_wrap(face_expression~face_color*face_gender) +
+  scale_y_discrete(name = "Rated emotion")+
+  scale_x_discrete(name = "Rated intensity (1-7)")
+ggsave("Ratings_dependency.png", dpi = 600)
+```
+
+
+We assumed that increased facial redness will lead to (a) generally greater degrees of anger inferred from a face (red-anger effect), (b) greater degrees of approach-oriented emotions inferred from a face (red-approach effect), and (c) lower degrees of avoidance-oriented emotions inferred from a face (red-avoidance effect). 
+# Stats Frequentist
+## null models 
+```{r}
+m0 <- lmer(rating ~ 1 + (1|subject) , data = data_long)
+m01 <- lmer(rating ~ 1 + (1|subject) + (1|face), data = data_long) # nullmodel for h1 
+m02 <- lmer(rating ~ 1 + (1|subject) + (1|face), data = data_h2) # nullmodel for h2 + h3
+
+anova(m0,m01)
+summary(m01) 
+```
+We used the model with random intercepts for subject and face. The model accounting for the gender of the face and considering the nesting of face in the gender was dropped because it resulted in singularity. To account for the gender of the displayed face did not increase fit. 
+## hypotheses test
+
+###MC
+MC: Facial expressions of different emotions are recognized correctly.
+
+
+```{r}
+mean_se_h1<-summarySEwithin(data_long, measurevar="rating", 
+                              withinvars=c("match_emotion"), idvar="subject")
+
+pd <- position_dodge(0.5) # move them .05 to the left and right
+
+ggplot(mean_se_h1,aes(x = match_emotion, y = rating)) + 
+  geom_point(position = pd, size = 2, shape = 18)+
+  geom_errorbar(aes(ymin=rating-ci, ymax=rating+ci), colour="black", width=.4, position=pd)+
+  scale_color_manual(values=c("darkgrey", "red"))+ 
+  scale_y_continuous(limits = c(1,7))+
+  theme_bw()
+```
+
+
+```{r}
+h0 <- update(m01,. ~ . + match_emotion)
+anova(h0,m01)
+tab_model(h0)
+```
+We observed that adding the factor accounting for a match of the emotion displayed and the emotion rated increased fit. Thus, participants were sensitive in their rating of emotions to the emotions displayed, when a match between the emotion displayed and the emotion rated occurred, the intensity of the emotion was rated higher.
+
+
+###h_1
+
+H1: Facial redness increases perceived intensity of anger independent of expressed emotion.
+they suggest: Interaction between FaceColor and RatedEmotion. --> unspecific: why not directly via contrast which sets all to zero and only ratedEmotion=1|ratedEmotion==anger ?
+
+We only compared ratings of anger for red and neutral faces independent of the displayed emotion.
+
+```{r}
+mean_se_h1<-summarySEwithin(data_long, measurevar="rating", 
+                              withinvars=c("face_color","anger"), idvar="subject")
+
+pd <- position_dodge(0.5) # move them .05 to the left and right
+
+ggplot(mean_se_h1,aes(x = anger, y = rating, color = face_color, group = face_color)) + 
+  geom_point(position = pd, size = 2, shape = 18)+
+  geom_errorbar(aes(ymin=rating-ci, ymax=rating+ci), colour="black", width=.4, position=pd)+
+  scale_color_manual(values=c("darkgrey", "red"))+ 
+  scale_y_continuous(limits = c(1,7))+
+  theme_bw()
+```
+To test it we used the null model only with random intercept for face and subject and compared it to a model with the predictor face color.
+
+```{r}
+h1_me <- update(m01,. ~ . + face_color+anger)
+h1 <- update(m01,. ~ . + face_color*anger)
+anova(m01,h1_me,h1)
+
+tab_model(h1)
+summary(h1)
+
+
+```
+
+We observed no effect.
+
+
+### h2+h3
+H2: Facial redness increases perceived intensity of facial expressions of approach-oriented emotions.
+H3: Facial redness decreases perceived intensity of facial expressions of avoidance-oriented emotions.
+
+
+We only considered rating where the rated emotion matched the displayed emotion. We grouped the displayed emotion happiness and anger as approach and fear as avoidance emotions. 
+
+```{r}
+mean_se_h2<-summarySEwithin(data_long, measurevar="rating", 
+                              withinvars=c("fear","happiness","anger","match_emotion","face_color"), idvar="subject")
+
+pd <- position_dodge(0.5) # move them .05 to the left and right
+
+ggplot(mean_se_h2,aes(x = match_emotion, y = rating, color = face_color, group = face_color)) + 
+  geom_point(position = pd, size = 2, shape = 18)+
+  geom_errorbar(aes(ymin=rating-ci, ymax=rating+ci), colour="black", width=.4, position=pd)+
+  scale_color_manual(values=c("darkgrey", "red"))+
+  scale_y_continuous(limits = c(1,7))+
+  facet_grid(~fear+happiness+anger)+
+  theme_bw()
+```
+We tested the effect by adding an interaction term of type of emotion and face color to the nullmodel m001 where we only used ratings when emotions matched. To test for significance we also fitted two main effects models. In the first added type of emotion and in the second the face color. We then carried out model comparisons for each model. 
+
+
+```{r}
+h2_me<-lmer(rating ~ face_color + rated_emotion + (1 | subject) + (1 | face), data = data_h2) 
+h2<-lmer(rating ~ face_color * rated_emotion + (1 | subject) + (1 | face), data = data_h2) 
+anova(m02,h2_me,h2)
+anova(h2)
+```
+```{r}
+sjPlot::tab_model(h0,h1,h2)
+```
+
+
+
+# Testing it with brms using bayesian models
+IMPORTANT: 
+When fitting the models we first used 4 chains to assess the MCMC and the convergence of the chains. For the parameters and tables we only used 1 chain b/c 4 chains overwhelmed the memory capacity. The chain number is set via n.chains = 1
+Running the brms models with 4 chains is likely to take some time (~2 days) and can crash unexpectedly. For this reason, we save every model object and then reload it with the function below.
+After the assessment of convergence we refitted the models with only 1 chains.
+
+## Metric model
+# MC
+```{r}
+nullmdl <- brm(rating ~ 1 +  (1|subject) + 
+                             (1|face),
+                           data = data_long, 
+                           cores = future::availableCores())
+save(nullmdl,file = "models_sasha/metric_nullmdl.Rda")
+nullmdl<-add_criterion(nullmdl,criterion = c("waic","loo"))
+save(nullmdl,file = "models_sasha/metric_nullmdl.Rda")
+```
+
+
+```{r}
+h1mdl<- brm(rating ~ 1 + 
+              (1|subject) + 
+              (1|face) + 
+              match_emotion ,
+                         data = data_long, 
+                         cores = future::availableCores())
+save(h1mdl,file = "models_sasha/metric_mc.Rda")
+h1mdl<-add_criterion(h1mdl,criterion = c("waic","loo"))
+save(h1mdl,file = "models_sasha/metric_mc.Rda")
+```
+
+
+
+## h1
+H1: Facial redness increases perceived intensity of anger independent of expressed emotion.
+
+```{r}
+h1 <- brm(
+  rating ~ 1 +
+    (1 | subject) +
+    (1 | face) + 
+    face_color*anger,
+  data = data_long,
+  cores = future::availableCores())
+save(h1, file = "models_sasha/metric_h1.Rda")
+h1 <- add_criterion(h1, criterion = c("waic", "loo"))
+save(h1, file = "models_sasha/metric_h1.Rda")
+
+```
+
+## h2
+H2: Facial redness increases perceived intensity of facial expressions of approach-oriented emotions (anger and happiness).
+H3: Facial redness decreases perceived intensity of facial expressions of avoidance-oriented emotions (fear).
+We test them in one model, with data only including anger, happiness and fear ratings in the case when the emotion is also expressed.
+
+```{r}
+
+
+
+h2 <- brm(
+  rating ~ 1 +
+    (1 | subject) +
+    (1 | face) +
+    face_color * rated_emotion,
+  data = data_long %>%
+    filter (match_emotion == "yes") %>%
+    filter (happiness == 1 | anger == 1 | fear == 1),
+  cores = future::availableCores()
+)
+save(h2, file = "models_sasha/metric_h2.Rda")
+h2 <- add_criterion(h2, criterion = c("waic", "loo"))
+save(h2, file = "models_sasha/metric_h2.Rda")
+tab_model(h2)
+
+```
+
+```{r}
+sjPlot::tab_model(h1mdl,h1,h2, file = "models_sasha/metric_models.html")
+```
+
+## Cum Probit Model
+
+
+```{r}
+nullmdl<- brm(rating ~ 1 + 
+                             (1|subject) + 
+                             (1|face),
+                           family=cumulative("probit"),
+                           data = data_long, 
+                           cores = future::availableCores())
+save(nullmdl,file = "models_sasha/ordinal_null.Rda")
+nullmdl<-add_criterion(nullmdl,criterion = c("waic","loo"))
+save(nullmdl,file = "models_sasha/ordinal_null.Rda")
+```
+
+
+```{r}
+h1mdl<- brm(rating ~ 1 + 
+              (1|subject) + 
+              (1|face) +
+             match_emotion,
+                         data = data_long,
+                         family=cumulative("probit"),
+                         cores = future::availableCores())
+save(h1mdl,file = "models_sasha/ordinal_mc.Rda")
+h1mdl<-add_criterion(h1mdl,criterion = c("waic","loo"))
+save(h1mdl,file = "models_sasha/ordinal_mc.Rda")
+
+```
+
+
+
+## h1
+H1: Facial redness increases perceived intensity of anger independent of expressed emotion.
+
+```{r}
+h1 <- brm(
+  rating ~ 1 +
+    (1 | subject) +
+    (1 | face) + 
+    face_color*anger,
+  data = data_long,
+  family=cumulative("probit"),
+  cores = future::availableCores())
+save(h1, file = "models_sasha/ordinal_h1.Rda")
+h1 <- add_criterion(h1, criterion = c("waic", "loo"))
+save(h1, file = "models_sasha/ordinal_h1.Rda")
+
+```
+
+## h2
+H2: Facial redness increases perceived intensity of facial expressions of approach-oriented emotions (anger and happiness).
+H3: Facial redness decreases perceived intensity of facial expressions of avoidance-oriented emotions (fear).
+We test them in one model.
+
+```{r}
+h2 <- brm(
+  rating ~ 1 +
+    (1 | subject) +
+    (1 | face) +
+    face_color * rated_emotion,
+  data = data_long %>%
+    filter (match_emotion == "yes") %>%
+    filter (happiness == 1 | anger == 1 | fear == 1),
+  family=cumulative("probit"),
+  cores = future::availableCores()
+)
+save(h2, file = "models_sasha/ordinal_h2.Rda")
+h2<- add_criterion(h2, criterion = c("waic", "loo"))
+save(h2, file = "models_sasha/ordinal_h2.Rda")
+```
+
+# Reading in the models saved by the STAN machine
+
+```{r}
+rda2list <- function(file) {
+  e <- new.env()
+  load(file, envir = e)
+  as.list(e)
+}
+
+folder <- "./models_single_chain/"
+files <- list.files(folder, pattern = ".Rda$")
+
+models <- Map(rda2list, file.path(folder, files))
+names(models) <- tools::file_path_sans_ext(files)
+```
+
+```{r}
+performance::variance_decomposition(models[["ordinal_mc"]][["h1mdl"]])
+```
+
+
+```{r}
+performance::variance_decomposition(models[["ordinal_h1"]][["h1"]])
+```
+
+```{r}
+performance::variance_decomposition(models[["ordinal_h2a"]][["h2"]])
+```
+
+
+```{r}
+loo_compare(models[["metric_nullmdl"]][["nullmdl"]],
+            models[["metric_mc"]][["h1mdl"]],
+            models[["metric_h1"]][["h1"]],
+            models[["ordinal_null"]][["nullmdl"]],
+            models[["ordinal_mc"]][["h1mdl"]],
+            models[["ordinal_h1"]][["h1"]],criterion = c("loo")) %>% print(.,digits = 2) %>% as.table() %>% write.table("loo1.csv")
+
+loo_compare(models[["metric_h2a"]][["h2"]],
+            models[["ordinal_h2a"]][["h2"]],criterion = c("loo")) %>% print(.,digits = 2) %>% as.table() %>% write.table("loo2.csv")
+
+```
+
+
+```{r}
+sjPlot::tab_model(models[["metric_mc"]][["h1mdl"]],
+            models[["metric_h1"]][["h1"]],
+            models[["metric_h2a"]][["h2"]], file = "metric_models.html")
+```
+
+Importantly, the output for the ordinal model of sigmas and taus is wrong, as the variances in the ordinal model under the probit link are not computed as in the metric models. For this reason the variances for fixed and random effects were estimated with the variance_decomposition function from the performance package.  
+
+```{r}
+sjPlot::tab_model(models[["ordinal_mc"]][["h1mdl"]],
+            models[["ordinal_h1"]][["h1"]],
+            models[["ordinal_h2a"]][["h2"]], file = "ordinal_models.html")
+```
+
+## revision...
+
+The results of the ANOVA preferably in the actual manuscript, but at a minimum in the supplements would allow for better comparison between this study and the existing literature. The ANOVA approach will also allow for the inclusion of all the data in one analysis rather than all of these different models to test different hypotheses.
+
+## response:
+Running the full anova with all interactions included as within variables with the full dataset was computationally impossible, as we ran out of memory. For this reason we carried out a bootstrapped anova with i = 1000 draws of n = 100 without replacement. 
+
+
+```{r}
+
+anova_summary <- function (afex_model) {
+  summary(afex_model)$univariate.tests[,1:6] %>% 
+  data.frame()%>%
+  rownames_to_column("Term") %>%
+  mutate(ges = Sum.Sq/(sum(Error.SS)+Sum.Sq)) %>% 
+  select(Term,F.value,Pr..F.,ges) %>% 
+    filter(Term != "(Intercept)") %>% 
+    rename(p.value = Pr..F.)
+} 
+
+sample_subjects_anova <- function (n) {
+  # getting the subsample from the full sample,
+  #i first need to have all data of each sbj in one row
+  sub_sample <- data_long %>% select(subject,
+                     gender,
+                     age,
+                     rating,
+                     face_color,
+                     face_expression,
+                     face_gender,
+                     rated_emotion) %>% 
+  pivot_wider(id_cols = c(subject,gender,age),
+              values_from = rating, 
+              names_from = c(face_color,
+                     face_expression,
+                     face_gender,
+                     rated_emotion)) %>% 
+    # picking my random n
+  slice_sample(n = n,replace = FALSE) %>% 
+    # making it long again for anova
+  pivot_longer(cols = 4:99,
+               names_to = c("face_color", "face_expression","face_gender", "rated_emotion"),
+               names_pattern = "(.*)_(.*)_(.*)_(.*)",
+               values_to = "rating")
+  # running the anova on the subsample
+  afex_model <-
+    sub_sample %>% 
+    afex::aov_4(rating ~ face_color * face_expression * face_gender * rated_emotion + 
+                      (face_color * face_expression * face_gender * rated_emotion|subject), 
+                      data = ., 
+                      method = "S")
+  purrr::map2_df(list(afex_model),1,~anova_summary(.x))
+}
+
+
+n_subjects <- 100
+n_iterations <- 1000
+
+sampled_anovas <-    
+  tibble(Iteration = 1:n_iterations) %>%
+  group_by(Iteration) %>%
+  do(sample_subjects_anova(n_subjects))
+
+anova_out<-sampled_anovas %>% 
+  group_by(Term) %>% 
+  summarise(mean_est = round(mean(ges),3),
+            lower_est = quantile(ges,probs = .1),
+            upper_est = quantile(ges,probs = .9),
+            mean_p.value = mean(p.value),
+            lower_p = quantile(p.value,probs = .1),
+            upper_p = quantile(p.value,probs = .9)) %>% 
+  mutate("ges 95CI" = paste0("[",round(lower_est,3),", ",round(upper_est,3),"]"),
+         "p.value 95CI" = paste0("[",round(lower_p,3),", ",round(upper_p,3),"]")) %>% 
+  select(Term,mean_est,"ges 95CI",mean_p.value, "p.value 95CI")
+
+save(sampled_anovas,file = "sampled_anovas.Rda")
+save(anova_out,file = "anova_out.Rda")
+
+```
+
+```{r}
+load("Anova/sampled_anovas.Rda")
+load("Anova/anova_out.Rda")
+```
+
+## Pairwise comparison for the face_gender:face_expression
+```{r}
+data_long %>% 
+  filter (face_expression == "anger" & rated_emotion == "anger") %>%
+  t.test(rating ~ face_gender, data = ., paired = TRUE)
+
+data_long %>% 
+  filter (face_expression == "anger"& rated_emotion == "anger") %>%
+effectsize::cohens_d(rating ~ face_gender, data = .)
+  
+```
+
+```{r}
+data_long %>% 
+  filter (face_expression == "anger") %>% 
+  pivot_wider(id_cols=c(subject,face_gender,face_color),names_from = rated_emotion, values_from = rating)
+
+data_long %>% 
+#  filter (match_emotion == "yes") %>%
+#  filter (face_expression == "anger") %>% 
+  group_by(subject,face_gender,rated_emotion,face_expression) %>% 
+  summarise(mean_rating = mean(rating)) %>% 
+group_by(rated_emotion,face_expression) %>%
+  rstatix:::t_test(mean_rating ~ face_gender, p.adjust.method = "bonferroni", paired = TRUE) %>% write_csv("pairwise_face_gender_all.csv")
+
+```
+
+
+## Comment 8 no exclusion based on RT
+```{r}
+lmerTest::lmer(rating ~ face_color*anger*face_gender + (1|subject) + (1|face), data = data_long %>% filter(face_expression == "neutral")) %>% 
+ tab_anova()
+```
+```{r}
+lmerTest::lmer(rating ~ face_color*face_gender*rated_emotion + (1|subject) + (1|face), data = data_long %>% filter(face_expression == "neutral")) %>% 
+ tab_anova()
+```
+```{r}
+lmerTest::lmer(rating ~ face_color*face_gender*rated_emotion*face_expression + (1|subject) + (1|face), data = data_long) %>% 
+ tab_anova()
+```
+
+
+finis
