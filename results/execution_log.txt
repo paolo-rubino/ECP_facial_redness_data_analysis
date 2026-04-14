@@ -251,6 +251,8 @@ STEP 5c: GENERATING PLOTS FOR PRESENTATION
 ========================================================================
   Saved Plot: results\plot_main_effects_bar.png
   Saved Plot: results\plot_exploratory_heatmap.png
+  Saved Plot: results\plot_demographics_age.png
+  Saved Plot: results\plot_demographics_gender.png
 
 ========================================================================
 STEP 6: BAYESIAN CUMULATIVE PROBIT MODEL (bambi + arviz)

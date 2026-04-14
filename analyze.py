@@ -120,6 +120,15 @@ df = df[df["participantID"] != "P046"].reset_index(drop=True)
 n_excluded = n_before - df.shape[0]
 print(f"  Excluded P046: {n_excluded} row(s) removed. Remaining: {df.shape[0]}")
 
+# --- Step 8.5: Extract Demographics (NEW) ---
+# We extract this before the column pruning step removes the metadata
+df_demographics = df[['participantID', 'gender', 'age']].copy()
+df_demographics['age'] = pd.to_numeric(df_demographics['age'], errors='coerce')
+
+# Map numeric Qualtrics codes to labels (Adjust 1 vs 2 if your survey order differs!)
+gender_map = {1: "Female", 2: "Male", 3: "Non-binary", 4: "Other"}
+df_demographics['gender_label'] = pd.to_numeric(df_demographics['gender'], errors='coerce').map(gender_map).fillna("Unknown")
+
 # --- Step 9: Column pruning ---
 ishihara_cols = [c for c in df.columns if "ishihara" in c.lower()]
 qualtrics_meta = [
@@ -515,7 +524,39 @@ try:
         plt.savefig(plot2_path, dpi=300)
         plt.close()
         print(f"  Saved Plot: {plot2_path}")
+
+    # --- Plot 3: Age Distribution (NEW) ---
+    if not df_demographics['age'].isna().all():
+        plt.figure(figsize=(7, 5))
+        sns.histplot(data=df_demographics.dropna(subset=['age']), x="age", bins=10, kde=True, color="#5DADE2")
+        plt.title("Age Distribution of Participants", pad=15, fontweight='bold')
+        plt.xlabel("Age", fontweight='bold')
+        plt.ylabel("Number of Participants", fontweight='bold')
         
+        plot3_path = os.path.join(OUTPUT_DIR, "plot_demographics_age.png")
+        plt.tight_layout()
+        plt.savefig(plot3_path, dpi=300)
+        plt.close()
+        print(f"  Saved Plot: {plot3_path}")
+
+    # --- Plot 4: Gender Distribution (NEW) ---
+    if not df_demographics['gender_label'].isna().all():
+        plt.figure(figsize=(7, 5))
+        # Value counts to get the correct bar order
+        gender_counts = df_demographics['gender_label'].value_counts().reset_index()
+        gender_counts.columns = ['Gender', 'Count']
+        
+        sns.barplot(data=gender_counts, x='Gender', y='Count', palette="Set2")
+        plt.title("Gender Distribution of Participants", pad=15, fontweight='bold')
+        plt.xlabel("Reported Gender", fontweight='bold')
+        plt.ylabel("Number of Participants", fontweight='bold')
+        
+        plot4_path = os.path.join(OUTPUT_DIR, "plot_demographics_gender.png")
+        plt.tight_layout()
+        plt.savefig(plot4_path, dpi=300)
+        plt.close()
+        print(f"  Saved Plot: {plot4_path}")
+
 except ImportError:
     print("  [WARNING] seaborn or matplotlib not installed. Presentation plots were skipped.")
     print("  Install with: pip install seaborn matplotlib\n")
