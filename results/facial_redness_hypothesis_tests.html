@@ -1,0 +1,176 @@
+
+<h2 class="sr-only">Bar chart comparing emotion intensity ratings for red versus normal facial coloration across four emotion conditions</h2>
+<div style="padding: 1rem 0; max-width: 680px;">
+<div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 1.5rem;">
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 0.75rem 1rem; text-align: center;">
+    <div style="font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px;">H1: Angry</div>
+    <div style="font-size: 18px; font-weight: 500; color: var(--color-text-primary);">p = .339</div>
+    <div style="font-size: 11px; color: var(--color-text-tertiary);">d = 0.13</div>
+  </div>
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 0.75rem 1rem; text-align: center;">
+    <div style="font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px;">H2: Fearful</div>
+    <div style="font-size: 18px; font-weight: 500; color: var(--color-text-primary);">p = .469</div>
+    <div style="font-size: 11px; color: var(--color-text-tertiary);">d = -0.10</div>
+  </div>
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 0.75rem 1rem; text-align: center;">
+    <div style="font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px;">H3: Happy</div>
+    <div style="font-size: 18px; font-weight: 500; color: var(--color-text-primary);">p = .375</div>
+    <div style="font-size: 11px; color: var(--color-text-tertiary);">d = 0.12</div>
+  </div>
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 0.75rem 1rem; text-align: center;">
+    <div style="font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px;">H4: Neutral</div>
+    <div style="font-size: 18px; font-weight: 500; color: var(--color-text-primary);">p = .091</div>
+    <div style="font-size: 11px; color: var(--color-text-tertiary);">d = -0.24</div>
+  </div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 8px; font-size: 12px; color: var(--color-text-secondary);">
+  <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #73726c;"></span>Normal coloration (NR)</span>
+  <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #E24B4A;"></span>Increased redness (R)</span>
+</div>
+<div style="position: relative; width: 100%; height: 320px;">
+  <canvas id="mainChart" role="img" aria-label="Grouped bar chart: congruent emotion ratings by facial coloration. Angry NR=3.86 R=3.94, Fearful NR=2.66 R=2.58, Happy NR=4.29 R=4.36, Neutral NR=1.92 R=1.79. No significant differences.">Congruent ratings: no significant effect of redness in any condition.</canvas>
+</div>
+<div style="margin-top: 1.5rem; position: relative; width: 100%; height: 240px;">
+  <canvas id="diffChart" role="img" aria-label="Forest plot showing mean difference R minus NR with 95% confidence intervals for each emotion condition. All intervals include zero.">Mean differences with CIs all cross zero.</canvas>
+</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const isDark = matchMedia('(prefers-color-scheme:dark)').matches;
+const txtMain = isDark ? '#e0dfd8' : '#2C2C2A';
+const txtMuted = isDark ? '#a0a09a' : '#888780';
+const gridC = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+const nrColor = isDark ? '#a0a09a' : '#73726c';
+const rColor = '#E24B4A';
+
+const labels = ['Angry faces\n(anger rating)', 'Fearful faces\n(scared rating)', 'Happy faces\n(happy rating)', 'Neutral faces\n(anger rating)'];
+const nrMeans = [3.858, 2.660, 4.292, 1.915];
+const rMeans  = [3.943, 2.575, 4.358, 1.792];
+const nrSD = [1.082, 1.479, 0.883, 1.139];
+const rSD  = [1.040, 1.467, 0.853, 1.049];
+const n = 53;
+const nrSE = nrSD.map(s => s / Math.sqrt(n));
+const rSE  = rSD.map(s => s / Math.sqrt(n));
+
+new Chart(document.getElementById('mainChart'), {
+  type: 'bar',
+  data: {
+    labels: labels,
+    datasets: [
+      { label: 'Normal', data: nrMeans, backgroundColor: nrColor, borderRadius: 3,
+        errorBars: nrSE },
+      { label: 'Red', data: rMeans, backgroundColor: rColor, borderRadius: 3,
+        errorBars: rSE }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2)
+        }
+      }
+    },
+    scales: {
+      y: { min: 0, max: 5.5, title: { display: true, text: 'Mean congruent rating (1-5)', color: txtMuted, font: { size: 12 } },
+           ticks: { color: txtMuted, stepSize: 1 }, grid: { color: gridC } },
+      x: { ticks: { color: txtMain, font: { size: 11 }, maxRotation: 0 }, grid: { display: false } }
+    }
+  },
+  plugins: [{
+    id: 'errBars',
+    afterDraw(chart) {
+      const ctx = chart.ctx;
+      chart.data.datasets.forEach((ds, di) => {
+        const meta = chart.getDatasetMeta(di);
+        meta.data.forEach((bar, i) => {
+          const se = ds.errorBars[i];
+          const yScale = chart.scales.y;
+          const yTop = yScale.getPixelForValue(ds.data[i] + 1.96*se);
+          const yBot = yScale.getPixelForValue(ds.data[i] - 1.96*se);
+          const x = bar.x;
+          ctx.save();
+          ctx.strokeStyle = txtMain;
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(x, yTop); ctx.lineTo(x, yBot);
+          ctx.moveTo(x-4, yTop); ctx.lineTo(x+4, yTop);
+          ctx.moveTo(x-4, yBot); ctx.lineTo(x+4, yBot);
+          ctx.stroke();
+          ctx.restore();
+        });
+      });
+    }
+  }]
+});
+
+const diffs = rMeans.map((r,i) => +(r - nrMeans[i]).toFixed(3));
+const ciLow = [-0.088, -0.313, -0.079, -0.262];
+const ciHigh = [0.257, 0.143, 0.211, 0.017];
+const diffLabels = ['H1: Angry', 'H2: Fearful', 'H3: Happy', 'H4: Neutral'];
+const diffColors = diffs.map(d => d >= 0 ? rColor : nrColor);
+
+new Chart(document.getElementById('diffChart'), {
+  type: 'bar',
+  data: {
+    labels: diffLabels,
+    datasets: [{
+      data: diffs,
+      backgroundColor: diffColors.map(c => c + '99'),
+      borderColor: diffColors,
+      borderWidth: 1.5,
+      borderRadius: 3
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      title: { display: true, text: 'Mean difference (R - NR) with 95% CI', color: txtMuted, font: { size: 12, weight: '400' }, align: 'start', padding: { bottom: 12 } },
+      tooltip: {
+        callbacks: { label: ctx => 'Δ = ' + ctx.parsed.x.toFixed(3) }
+      }
+    },
+    scales: {
+      x: { min: -0.5, max: 0.5, ticks: { color: txtMuted }, grid: { color: gridC },
+           title: { display: true, text: 'Rating difference (R minus NR)', color: txtMuted, font: { size: 11 } } },
+      y: { ticks: { color: txtMain, font: { size: 12 } }, grid: { display: false } }
+    }
+  },
+  plugins: [{
+    id: 'ciLines',
+    afterDraw(chart) {
+      const ctx = chart.ctx;
+      const xScale = chart.scales.x;
+      const meta = chart.getDatasetMeta(0);
+      meta.data.forEach((bar, i) => {
+        const y = bar.y;
+        const xL = xScale.getPixelForValue(ciLow[i]);
+        const xR = xScale.getPixelForValue(ciHigh[i]);
+        ctx.save();
+        ctx.strokeStyle = txtMain;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(xL, y); ctx.lineTo(xR, y);
+        ctx.moveTo(xL, y-4); ctx.lineTo(xL, y+4);
+        ctx.moveTo(xR, y-4); ctx.lineTo(xR, y+4);
+        ctx.stroke();
+        ctx.restore();
+      });
+      const x0 = xScale.getPixelForValue(0);
+      ctx.save();
+      ctx.setLineDash([4,4]);
+      ctx.strokeStyle = txtMuted;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x0, chart.chartArea.top);
+      ctx.lineTo(x0, chart.chartArea.bottom);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }]
+});
+</script>
