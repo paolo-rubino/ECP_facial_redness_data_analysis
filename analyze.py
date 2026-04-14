@@ -120,12 +120,12 @@ df = df[df["participantID"] != "P046"].reset_index(drop=True)
 n_excluded = n_before - df.shape[0]
 print(f"  Excluded P046: {n_excluded} row(s) removed. Remaining: {df.shape[0]}")
 
-# --- Step 8.5: Extract Demographics (NEW) ---
-# We extract this before the column pruning step removes the metadata
-df_demographics = df[['participantID', 'gender', 'age']].copy()
+# --- Step 8.5: Extract Demographics (Updated) ---
+# Added 'occupation_1' to the extraction list
+df_demographics = df[['participantID', 'gender', 'age', 'occupation_1']].copy()
 df_demographics['age'] = pd.to_numeric(df_demographics['age'], errors='coerce')
 
-# Map numeric Qualtrics codes to labels (Adjust 1 vs 2 if your survey order differs!)
+# Map numeric Qualtrics codes to labels
 gender_map = {1: "Female", 2: "Male", 3: "Non-binary", 4: "Other"}
 df_demographics['gender_label'] = pd.to_numeric(df_demographics['gender'], errors='coerce').map(gender_map).fillna("Unknown")
 
@@ -525,10 +525,11 @@ try:
         plt.close()
         print(f"  Saved Plot: {plot2_path}")
 
-    # --- Plot 3: Age Distribution (NEW) ---
+# --- Plot 3: Age Distribution (Updated) ---
     if not df_demographics['age'].isna().all():
         plt.figure(figsize=(7, 5))
-        sns.histplot(data=df_demographics.dropna(subset=['age']), x="age", bins=10, kde=True, color="#5DADE2")
+        # Increased bins from 10 to 20 for more detail
+        sns.histplot(data=df_demographics.dropna(subset=['age']), x="age", bins=20, kde=True, color="#5DADE2")
         plt.title("Age Distribution of Participants", pad=15, fontweight='bold')
         plt.xlabel("Age", fontweight='bold')
         plt.ylabel("Number of Participants", fontweight='bold')
@@ -539,23 +540,52 @@ try:
         plt.close()
         print(f"  Saved Plot: {plot3_path}")
 
-    # --- Plot 4: Gender Distribution (NEW) ---
+# --- Plot 4: Gender Distribution (Updated to Pie Chart) ---
     if not df_demographics['gender_label'].isna().all():
-        plt.figure(figsize=(7, 5))
-        # Value counts to get the correct bar order
-        gender_counts = df_demographics['gender_label'].value_counts().reset_index()
-        gender_counts.columns = ['Gender', 'Count']
+        plt.figure(figsize=(7, 7))
+        gender_counts = df_demographics['gender_label'].value_counts()
         
-        sns.barplot(data=gender_counts, x='Gender', y='Count', palette="Set2")
+        # Using matplotlib to create a clean pie chart
+        plt.pie(
+            gender_counts, 
+            labels=gender_counts.index, 
+            autopct='%1.1f%%', 
+            startangle=140, 
+            colors=sns.color_palette("Set2"),
+            textprops={'fontweight': 'bold'}
+        )
         plt.title("Gender Distribution of Participants", pad=15, fontweight='bold')
-        plt.xlabel("Reported Gender", fontweight='bold')
-        plt.ylabel("Number of Participants", fontweight='bold')
         
         plot4_path = os.path.join(OUTPUT_DIR, "plot_demographics_gender.png")
         plt.tight_layout()
         plt.savefig(plot4_path, dpi=300)
         plt.close()
         print(f"  Saved Plot: {plot4_path}")
+
+    # --- Plot 5: Occupation Distribution (Pie Chart: Top Class vs Other) ---
+    if 'occupation_1' in df_demographics.columns:
+        plt.figure(figsize=(7, 7))
+        # Get counts and find the most predominant class
+        occ_counts = df_demographics['occupation_1'].value_counts()
+        
+        if not occ_counts.empty:
+            top_label = occ_counts.index[0]
+            
+            # Group everything that isn't the top class into "Other"
+            df_demographics['occ_grouped'] = df_demographics['occupation_1'].apply(
+                lambda x: x if x == top_label else "Other"
+            )
+            grouped_counts = df_demographics['occ_grouped'].value_counts()
+            
+            plt.pie(grouped_counts, labels=grouped_counts.index, autopct='%1.1f%%', 
+                    startangle=140, colors=sns.color_palette("Pastel1"), textprops={'fontweight': 'bold'})
+            plt.title(f"Participant Occupations ({top_label} vs. Other)", pad=15, fontweight='bold')
+            
+            plot5_path = os.path.join(OUTPUT_DIR, "plot_demographics_occupation.png")
+            plt.tight_layout()
+            plt.savefig(plot5_path, dpi=300)
+            plt.close()
+            print(f"  Saved Plot: {plot5_path}")
 
 except ImportError:
     print("  [WARNING] seaborn or matplotlib not installed. Presentation plots were skipped.")
