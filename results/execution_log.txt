@@ -256,6 +256,8 @@ STEP 5c: GENERATING PLOTS FOR PRESENTATION
   Saved Plot: results\plot_demographics_occupation.png
   Saved Plot: results\plot_replication_comparison.png
   Saved Plot: results\plot_interaction_lines.png
+  Saved Plot: results\plot_manipulation_check.png
+  Saved Plot: results\plot_likert_distribution.png
 
 ========================================================================
 STEP 6: BAYESIAN CUMULATIVE PROBIT MODEL (bambi + arviz)

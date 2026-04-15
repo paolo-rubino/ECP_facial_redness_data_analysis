@@ -638,6 +638,80 @@ try:
     plt.close()
     print(f"  Saved Plot: {plot7_path}")
 
+    # --- Plot 8: Manipulation Check (Violin Plot) ---
+    if 'mc_data' in locals():
+        plt.figure(figsize=(8, 6))
+        # Create a violin plot to show the distribution of ratings
+        ax = sns.violinplot(
+            data=mc_data, 
+            x="is_congruent", 
+            y="rating", 
+            palette={"0": "#E74C3C", "1": "#2ECC71"}, # Red for Incongruent, Green for Congruent
+            inner="quartile",
+            cut=0 # Prevents the violin from extending past 1 and 5
+        )
+        plt.title("Manipulation Check: Emotion Recognition", pad=15, fontweight='bold')
+        plt.xlabel("Emotion - Face Pairing", fontweight='bold')
+        plt.ylabel("Intensity Rating (1-5)", fontweight='bold')
+        plt.xticks(ticks=[0, 1], labels=["Incongruent\n(Mismatch)", "Congruent\n(Match)"])
+        
+        plot8_path = os.path.join(OUTPUT_DIR, "plot_manipulation_check.png")
+        plt.tight_layout()
+        plt.savefig(plot8_path, dpi=300)
+        plt.close()
+        print(f"  Saved Plot: {plot8_path}")
+
+    # --- Plot 9: Likert Scale Distribution (100% Stacked Bar Chart) ---
+    plt.figure(figsize=(10, 7))
+    
+    # Calculate the percentage of each rating (1-5) per condition
+    likert_counts = (
+        df_congruent.groupby(['shownEmotion', 'facialColoration'])['rating']
+        .value_counts(normalize=True)
+        .unstack(fill_value=0) * 100
+    )
+    
+    # Reorder index for logical grouping
+    likert_counts = likert_counts.reindex([
+        ('A', 'NR'), ('A', 'R'), 
+        ('F', 'NR'), ('F', 'R'), 
+        ('HC', 'NR'), ('HC', 'R'), 
+        ('N', 'NR'), ('N', 'R')
+    ])
+    
+    # Custom labels for the y-axis
+    y_labels = [
+        "Angry (Normal)", "Angry (Red)", 
+        "Fearful (Normal)", "Fearful (Red)", 
+        "Happy (Normal)", "Happy (Red)", 
+        "Neutral (Normal)", "Neutral (Red)"
+    ]
+    
+    # Plotting the stacked horizontal bar chart
+    ax = likert_counts.plot(
+        kind='barh', 
+        stacked=True, 
+        colormap='coolwarm', # Red/Blue diverging colormap representing 1 to 5
+        edgecolor='white',
+        figsize=(10, 7),
+        width=0.85
+    )
+    
+    plt.title("Distribution of Ordinal Ratings (1-5) per Condition", pad=15, fontweight='bold')
+    plt.xlabel("Percentage of Ratings (%)", fontweight='bold')
+    plt.ylabel("Face Condition", fontweight='bold')
+    ax.set_yticklabels(y_labels)
+    
+    # Formatting the legend
+    plt.legend(title="Chosen Rating", bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.invert_yaxis() # Reverses the y-axis so Angry is at the top
+    
+    plot9_path = os.path.join(OUTPUT_DIR, "plot_likert_distribution.png")
+    plt.tight_layout()
+    plt.savefig(plot9_path, dpi=300)
+    plt.close()
+    print(f"  Saved Plot: {plot9_path}")
+
 except ImportError:
     print("  [WARNING] seaborn or matplotlib not installed. Presentation plots were skipped.")
     print("  Install with: pip install seaborn matplotlib\n")
